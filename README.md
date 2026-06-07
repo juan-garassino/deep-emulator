@@ -238,6 +238,12 @@ Notifications are opt-in via repo secrets. Steps:
 2. Register: `@register("CARTRIDGE TITLE") class MyAdapter(CartridgeAdapter): ...`.
 3. For Game Boy, the registry auto-dispatches by ROM header title (`pyboy.cartridge_title`). For Atari, declare `rom_name` and let `ale_py.roms` resolve it.
 
+## Documentation
+
+- [`docs/RUNPOD.md`](docs/RUNPOD.md) — full ops walkthrough (prereqs → first pod → recurring runs → cost guidance → troubleshooting).
+- [`docs/SELF_IMPROVE.md`](docs/SELF_IMPROVE.md) — reviewer guide for `claude-self-improve-*` branches. Signature recompute, methodology checks, decision flow, guardrail audit.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the four load-bearing seams (CartridgeAdapter, DDQN rank dispatch, FrozenEncoderEnv algo dispatch, portable bundle), with file:line citations.
+
 ## References
 
 - [PyBoy](https://github.com/Baekalfen/PyBoy) — Game Boy emulator (we use `pyboy 2.4`)
