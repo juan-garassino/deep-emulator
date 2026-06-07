@@ -6,3 +6,42 @@ raw_data/
 *.csv
 **/__pycache__/
 .env
+
+# deepEmulator
+roms/*
+!roms/.gitkeep
+checkpoints/*
+!checkpoints/.gitkeep
+data/trajectories/*
+!data/trajectories/.gitkeep
+*.gb
+*.gbc
+*.gba
+*.md.sav
+*.state.bak
+runs/
+wandb/
+build/
+dist/
+.venv/
+venv/
+
+encoders/*
+!encoders/.gitkeep
+states/*
+!states/.gitkeep
+
+# per-machine Claude Code state (never commit)
+.claude/
+
+# log noise from local helpers
+script.log
+repo_status_puller.log
+*.log
+
+# Terraform local artifacts (root-level guard; infra/.gitignore covers the dir itself)
+/tmp/gcp-sa-deepemu.json
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.tfvars

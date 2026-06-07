@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepEmulator"
+version = "0.1.0"
+description = "Cartridge-adaptive RL substrate for Game Boy (PyBoy) and SEGA (stable-retro) — RunPod-train / local-inference."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Juan Garassino" }]
+
+dependencies = [
+    "pyboy==2.4.0",
+    "torch>=2.3,<2.6",
+    "numpy",
+    "pillow",
+    "matplotlib",
+    "seaborn",
+]
+
+[project.optional-dependencies]
+sega = ["stable-retro"]
+atari = ["ale-py>=0.11"]
+play = ["pygame"]
+viz = ["pygame"]
+cloud = ["google-cloud-storage>=2.10", "wandb>=0.16"]
+dev = ["pytest", "coverage", "black", "flake8"]
+wandb = ["wandb"]
+
+[project.scripts]
+deepemu-train = "deepEmulator.training.train:main"
+deepemu-play = "deepEmulator.inference.play:main"
+deepemu-visualize = "deepEmulator.visualization.arrows:main"
+deepemu-pretrain-dino = "deepEmulator.training.pretrain_dino:main"
+deepemu-pretrain-vjepa = "deepEmulator.training.pretrain_vjepa:main"
+deepemu-attention = "deepEmulator.visualization.attention:main"
+deepemu-eval = "deepEmulator.training.eval:main"
+deepemu-collect-frames = "deepEmulator.training.collect_frames:main"
+
+[tool.setuptools.packages.find]
+include = ["deepEmulator*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]

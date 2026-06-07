@@ -1,0 +1,70 @@
+name: review-self-improve
+
+on:
+  push:
+    branches: ["claude-self-improve-*"]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,atari]"
+
+      - name: Tests must pass on the candidate branch
+        run: make test
+
+      - name: Validate improvement_log.tsv signatures
+        run: |
+          python -c "
+          from pathlib import Path
+          log = Path('improvement_log.tsv')
+          if not log.exists():
+              print('no improvement_log.tsv on branch — abort')
+              raise SystemExit(1)
+          rows = log.read_text().strip().splitlines()
+          print(f'rows: {len(rows) - 1}')
+          # Full signature recomputation requires the bundle dirs to be present;
+          # this stage just checks the schema. Reviewer recomputes signatures
+          # against the actual bundles offline.
+          for r in rows[1:]:
+              parts = r.split('\t')
+              assert len(parts) == 5, f'bad row: {r}'
+          print('schema ok')
+          "
+
+      - name: Summary comment
+        if: always()
+        run: |
+          echo '## Self-improve branch review'
+          git log master..HEAD --oneline | head -50 || true
+          echo
+          if [ -f improvement_log.tsv ]; then
+            echo '### improvement_log.tsv'
+            tail -20 improvement_log.tsv
+          fi
+
+      - name: Telegram notify (always — self-improve branches are review-critical)
+        if: always() && secrets.TELEGRAM_TOKEN != ''
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_TO }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          format: markdown
+          message: |
+            🤖 *Self-improve branch needs review*
+            branch: `${{ github.ref_name }}`
+            status: ${{ job.status }}
+            commits: ${{ github.event.commits[0].message }}
+            [review run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            [compare to master](${{ github.server_url }}/${{ github.repository }}/compare/master...${{ github.ref_name }})
