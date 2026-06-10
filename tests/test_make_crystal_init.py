@@ -27,7 +27,6 @@ def test_script_module_loads():
 
 
 def test_arg_parsing_defaults_to_cyndaquil():
-    sys.argv = ["make_crystal_init.py", "--rom", "fake.gbc"]
     p = _mod.argparse.ArgumentParser(prog="x")
     p.add_argument("--rom", type=Path, required=True)
     p.add_argument("--starter", default="cyndaquil", choices=list(_mod._STARTER_INDEX))

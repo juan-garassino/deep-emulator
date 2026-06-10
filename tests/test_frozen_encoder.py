@@ -153,7 +153,7 @@ def test_load_frozen_encoder_legacy_bundle_without_algo_key(tmp_path):
 
 
 # --- end-to-end: train CLI with --encoder ----------------------------------
-def test_train_cli_passes_encoder_through_to_bundle_metadata(tmp_path):
+def test_train_cli_passes_encoder_through_to_bundle_metadata(tmp_path, monkeypatch):
     """Exercise the --encoder flag through `train.main` using fake env + tiny encoder."""
     import sys
 
@@ -189,7 +189,7 @@ def test_train_cli_passes_encoder_through_to_bundle_metadata(tmp_path):
 
     try:
         run_dir = tmp_path / "checkpoints" / "pokemon_red" / "run0"
-        sys.argv = [
+        monkeypatch.setattr(sys, "argv", [
             "deepemu-train",
             "--cartridge", "POKEMON RED",
             "--rom", str(tmp_path / "fake.gb"),
@@ -199,7 +199,7 @@ def test_train_cli_passes_encoder_through_to_bundle_metadata(tmp_path):
             "--headless",
             "--run-dir", str(run_dir),
             "--encoder", str(enc_dir),
-        ]
+        ])
         rc = train_mod.main()
         assert rc == 0
 

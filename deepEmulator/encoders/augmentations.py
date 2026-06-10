@@ -87,7 +87,9 @@ class MultiCropAugment:
         # Gaussian blur with prob
         if random.random() < self.cfg.blur_prob:
             r = random.uniform(*self.cfg.blur_radius_range)
-            x = _gaussian_blur(x, r)
+            # kernel normalization is only float32-exact, so blur can overshoot
+            # the [0, 1] contract by ~1e-7 on saturated regions — clamp it back
+            x = _gaussian_blur(x, r).clamp(0.0, 1.0)
         return x
 
     def __call__(self, x: torch.Tensor) -> list[torch.Tensor]:

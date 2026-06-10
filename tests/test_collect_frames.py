@@ -73,14 +73,14 @@ def test_end_to_end_cli_with_fake_envs(tmp_path, monkeypatch):
     monkeypatch.setattr(cf, "_build_env", lambda cart, rom, init_state: _FakeEnv())
 
     out = tmp_path / "corpus"
-    sys.argv = [
+    monkeypatch.setattr(sys, "argv", [
         "deepemu-collect-frames",
         "--cartridges", "POKEMON RED",
         "--rom", "roms/fake.gb",
         "--frames", "200",
         "--out", str(out),
         "--chunk-size", "64",
-    ]
+    ])
     rc = cf.main()
     assert rc == 0
     assert out.exists()
@@ -100,14 +100,14 @@ def test_multi_cartridge_round_robin(tmp_path, monkeypatch):
     monkeypatch.setattr(cf, "_build_env", lambda cart, rom, init_state: _FakeEnv())
 
     out = tmp_path / "multi"
-    sys.argv = [
+    monkeypatch.setattr(sys, "argv", [
         "deepemu-collect-frames",
         "--cartridges", "POKEMON RED", "ATARI PONG",
         "--rom", "a.gb", "b.bin",
         "--frames", "60",
         "--out", str(out),
         "--chunk-size", "32",
-    ]
+    ])
     rc = cf.main()
     assert rc == 0
     import json

@@ -274,14 +274,14 @@ def test_end_to_end_cli_eval(tmp_path, monkeypatch):
 
     monkeypatch.setattr(eval_mod, "make_env", lambda **kw: _FakeEvalEnv(episode_length=4, ep_reward=1.0))
 
-    sys.argv = [
+    monkeypatch.setattr(sys, "argv", [
         "deepemu-eval",
         "--baseline", str(bundle),
         "--cartridge", "POKEMON RED",
         "--rom", str(tmp_path / "fake.gb"),
         "--episodes", "3",
         "--out", str(tmp_path / "report.html"),
-    ]
+    ])
     rc = eval_mod.main()
     assert rc == 0
     assert (tmp_path / "report.html").exists()

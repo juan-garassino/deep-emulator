@@ -228,14 +228,14 @@ def test_main_dispatches_run_play(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(play_mod, "run_play", _fake_run_play)
-    sys.argv = [
+    monkeypatch.setattr(sys, "argv", [
         "deepemu-play",
         "--cartridge", "POKEMON RED",
         "--rom", "roms/fake.gb",
         "--ckpt", str(bundle),
         "--visible", "--arrows",
         "--episodes", "2",
-    ]
+    ])
     rc = play_mod.main()
     assert rc == 0
     assert called["cartridge"] == "POKEMON RED"

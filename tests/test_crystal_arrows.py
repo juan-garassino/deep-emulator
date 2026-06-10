@@ -107,7 +107,7 @@ def test_crystal_compute_flow_on_synthetic_trajectory():
 @pytest.mark.skipif(
     importlib.util.find_spec("PIL") is None, reason="PIL required (install [viz] extra)"
 )
-def test_crystal_arrows_cli_end_to_end(tmp_path):
+def test_crystal_arrows_cli_end_to_end(tmp_path, monkeypatch):
     """Full path: fake trajectory CSV → run deepemu-visualize for Crystal → PNG."""
     from deepEmulator.visualization import arrows as arrows_mod
 
@@ -122,13 +122,13 @@ def test_crystal_arrows_cli_end_to_end(tmp_path):
             w.writerow([i, i % 20, 5, map_id, 2, 0.0])
 
     out = tmp_path / "crystal_arrows.png"
-    sys.argv = [
+    monkeypatch.setattr(sys, "argv", [
         "deepemu-visualize",
         "--trajectories", str(traj_dir),
         "--cartridge", "POKEMON CRYSTAL",
         "--out", str(out),
         "--cell-size", "8",
-    ]
+    ])
     rc = arrows_mod.main()
     assert rc == 0
     assert out.exists() and out.stat().st_size > 100

@@ -124,7 +124,7 @@ def test_pretrain_cli_writes_bundle(tmp_path, monkeypatch):
     store.flush()
 
     runs_root = tmp_path / "encoders"
-    sys.argv = [
+    monkeypatch.setattr(sys, "argv", [
         "deepemu-pretrain-dino",
         "--corpus", str(corpus),
         "--steps", "30",
@@ -134,7 +134,7 @@ def test_pretrain_cli_writes_bundle(tmp_path, monkeypatch):
         "--runs-root", str(runs_root),
         "--out-dim", "256",
         "--n-local-crops", "2",
-    ]
+    ])
     # Monkey-patch trainer to use a small ViT so the test stays fast
     from deepEmulator.training import pretrain_dino as pd_mod
     from deepEmulator.encoders.vit import ViTConfig as RealViTConfig

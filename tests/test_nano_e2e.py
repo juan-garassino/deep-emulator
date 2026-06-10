@@ -81,9 +81,9 @@ def test_nano_pipeline_produces_all_artifacts(tmp_path):
     assert isinstance(artifacts["eval_mean_reward"], float)
 
 
-def test_nano_script_main_runs(tmp_path):
+def test_nano_script_main_runs(tmp_path, monkeypatch):
     """The CLI entrypoint should run with tiny params and exit 0."""
-    sys.argv = [
+    monkeypatch.setattr(sys, "argv", [
         "nano_e2e.py",
         "--out", str(tmp_path),
         "--frames", "64",
@@ -91,7 +91,7 @@ def test_nano_script_main_runs(tmp_path):
         "--rl-steps", "10",
         "--eval-episodes", "1",
         "--gif-steps", "2",
-    ]
+    ])
     rc = _nano.main()
     assert rc == 0
     assert (tmp_path / "eval_report.html").exists()

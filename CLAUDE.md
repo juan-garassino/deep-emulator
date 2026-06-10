@@ -121,7 +121,8 @@ scripts/iteration_watchdog.sh wallclock + iter caps for self_improve.
 deepEmulator/utils/gcs.py     gs:// + file:// URI storage (download/upload_dir/latest_run_uri).
 deepEmulator/training/runpod_train.py    GCS-staging wrapper around train.main (mirrors colab_train.py).
 deepEmulator/training/runpod_pretrain.py GCS-staging wrapper around pretrain_dino.main / pretrain_vjepa.main.
-.github/workflows/ci.yml                      CPU-only pytest on push/PR.
+.github/workflows/ci.yml                      CPU-only pytest (py3.10, container parity) +
+                                              smoke-import job (py3.12) on push/PR.
 .github/workflows/review_self_improve.yml     auto-runs on claude-self-improve-* branches.
 ```
 

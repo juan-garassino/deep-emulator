@@ -124,7 +124,7 @@ def test_render_arrows_rejects_empty():
 @pytest.mark.skipif(
     importlib.util.find_spec("PIL") is None, reason="PIL required (install [viz] extra)"
 )
-def test_cli_end_to_end_with_real_pokemon_red_mapping(tmp_path):
+def test_cli_end_to_end_with_real_pokemon_red_mapping(tmp_path, monkeypatch):
     """Full path: write fake trajectories → run main → assert PNG."""
     from deepEmulator.visualization import arrows as arrows_mod
 
@@ -138,13 +138,13 @@ def test_cli_end_to_end_with_real_pokemon_red_mapping(tmp_path):
             w.writerow([i, 5 + (i % 4), 3, 40, 0, 0.0])
 
     out = tmp_path / "arrows.png"
-    sys.argv = [
+    monkeypatch.setattr(sys, "argv", [
         "deepemu-visualize",
         "--trajectories", str(traj_dir),
         "--cartridge", "POKEMON RED",
         "--out", str(out),
         "--cell-size", "8",
-    ]
+    ])
     rc = arrows_mod.main()
     assert rc == 0
     assert out.exists() and out.stat().st_size > 100
