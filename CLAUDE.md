@@ -248,6 +248,13 @@ Phases I + II + III + IV + F8 + F9 are merged and passing — ~135 tests green, 
 - Self-improve mode is OPT-IN behind three env-var gates; `claude` binary present in the image but never invoked unless `MODE=self_improve` AND `CLAUDE_CODE_ENABLED=1` AND `ANTHROPIC_API_KEY` are all set.
 - **Backlog closure round 2 DONE**: `uv.lock` committed (~542 KB, 100 packages resolved); Dockerfile uses `uv export --frozen` for byte-reproducible image rebuilds. `WandbLogger` helper (`deepEmulator/utils/wandb_logger.py`) wires `train.py` + `pretrain_dino.py` to wandb when `WANDB_API_KEY` is set, degrades to no-op otherwise. 4 new unit tests green.
 
+**2026-06-11 audit fix round (14 commits, 228 tests green)** — a 5-agent audit found the agent effectively couldn't learn and the first pod would lose its artifacts; everything verified-fixable locally was fixed:
+- *Learning*: budget-relative epsilon anneal (was ~97% random at end of budget), γ 0.9→0.99, /255 normalization, terminated-vs-truncated bootstrap, heal-reward refresh, real emulator resets, boot-exit lump-sum fix, per-step stuck penalty, reward clip, 6-button default action set, dueling head, n-step returns, grad clip, seeding.
+- *Infra*: entrypoint child+traps (exec destroyed the sync trap — artifacts never reached GCS), periodic background sync, working resume chain (verified: fresh container continued from curr_step 3000), GCP_SA_JSON materialization, IAM list fix, vjepa staging guard, slimmer non-root image, pyboy pinned 2.7.0 (2.7.1 is yanked).
+- *SSL*: obs-path preprocessing parity (validated at load), DINO reference schedules, attention-stash gate (~6 GB), portable in-bundle encoders, corpus diversity gates.
+- *Throughput*: fused frame grab (0.84→0.28 ms), ring replay buffer (3.4 GB→576 MB at 100K), encoder on agent device + latent cache, `--num-envs` parallel workers, optional `--amp`.
+- *Self-improve*: clone-on-entry/branch/push wired, JSON-backed signed eval (scores were all NaN before), `SELF_IMPROVE_DRY=1` git-path check, review-workflow protected-files gate.
+
 **Makefile is the canonical user entrypoint** — `make help` prints all verbs grouped by stage. Typical flow:
 ```
 make install_dev → make verify_ram → make smoke_rom → make play (record init.state)
@@ -262,9 +269,11 @@ Vec throughput measured on the dev Mac (4 workers, Coral ROM): 171 → 359 env-s
 
 **What's still unverified**:
 - Real Colab run hasn't happened. Notebook 08/09 are ready, dry-run cell catches most failures in 30s.
-- Real RunPod run hasn't happened. Local `make runpod_run_local` smoke (against `file:///tmp/deepemu`) is the only validation so far.
-- DINO has never pretrained on a real corpus (only synthetic frames via `scripts/nano_e2e.py`).
-- V-JEPA encoder module (`deepEmulator/encoders/vjepa.py`, `vit_spatiotemporal.py`, `sequence_augmentations.py`) is Phase 1; CLI is registered but the implementation is not yet shipped — `deepemu-pretrain-vjepa` will `ImportError` until Phase 1 lands.
-- Phase 0.5 self-improve mode has not been exercised end-to-end. Toggle plumbing is in place; the autoresearch-pattern git-clone-on-entry / branch-push-on-exit is unwired (TODO when first invoked).
-- Several Crystal/Coral RAM addresses marked `# VERIFY` (wMapGroup, wMapNumber, wXCoord, wYCoord, wBattleMode) need real-ROM dump_state cross-check.
-- No DDQN training run longer than 500 steps has happened on any real ROM yet.
+- Real RunPod run hasn't happened. `make smoke_lifecycle` (host entrypoint + SIGTERM, PASSES) and the file:// resume round-trip are the validation so far; the gs://, IAM, and auth legs need the Phase-14 pod ladder (see docs/RUNPOD.md). The post-audit Dockerfile has NOT been built (docker daemon was down) — run `make runpod_build` first.
+- DINO has never pretrained on a real corpus (only synthetic frames via `scripts/nano_e2e.py`); the new schedules/per-sample augs are unit-tested but not validated by a real pretrain.
+- V-JEPA encoder module is Phase 1; the CLI + entrypoint now stub/guard cleanly (exit 2 BEFORE corpus staging) but the implementation is not shipped.
+- Self-improve has not run end-to-end; the git path (clone→branch→commit→push→review workflow) is wired and testable via `SELF_IMPROVE_DRY=1`, which has also not yet been run against the real repo.
+- Several Crystal/Coral RAM addresses marked `# VERIFY` (wMapGroup, wMapNumber, wXCoord, wYCoord, wBattleMode) need real-ROM dump_state cross-check — `make smoke_rom` now runs reward_strict=True so a wrong address fails loudly (200-step Coral boot smoke passes).
+- No DDQN training run longer than 500 steps has happened on any real ROM yet; `coral_init.state` is still unrecorded (the gating factor for actual learning).
+- AMP (`--amp`) is implemented but unbenchmarked — measure on the first GPU pod before enabling for long runs.
+- Vec runner: 2.1x at 4 workers on the 4-core dev Mac; pod-CPU scaling unmeasured.
