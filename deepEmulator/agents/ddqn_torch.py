@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import copy
 import random
-from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn as nn
+
+from deepEmulator.agents.replay_buffer import ReplayBuffer
 
 
 # --- hyperparameters --------------------------------------------------------
@@ -181,13 +182,19 @@ class DDQNAgent:
             self.net.online.parameters(), lr=self.config.learning_rate
         )
         self.loss_fn = nn.SmoothL1Loss()
-        self.memory: deque = deque(maxlen=self.config.deque_size)
+        # `memory` keeps its historical name (and the deque_size config knob)
+        # but is now a preallocated ring with frame-dedup storage + n-step
+        self.memory = ReplayBuffer(
+            self.config.deque_size,
+            obs_shape,
+            n_step=self.config.n_step,
+            gamma=self.config.gamma,
+        )
 
         self.exploration_rate = self.config.exploration_rate
         self.eval_epsilon = 0.0  # used by act(explore=False); play/eval set this
         self.curr_step = 0
-        # raw (s, ns, a, r, terminated) transitions awaiting n-step maturity
-        self._nstep_queue: deque = deque()
+        self._needs_episode_start = True
 
     # --- preprocessing -----------------------------------------------------
     def _prep(self, x: torch.Tensor) -> torch.Tensor:
@@ -228,84 +235,36 @@ class DDQNAgent:
 
     # --- replay buffer ---------------------------------------------------
     def cache(self, state, next_state, action, reward, done, truncated: bool = False) -> None:
-        """Record one transition. `done` means TERMINATED (true env terminal —
-        bootstrap is cut). Time-limit ends go in `truncated` instead: the value
-        target still bootstraps, but the n-step window flushes.
+        """Record one RAW transition. `done` means TERMINATED (true env
+        terminal — bootstrap is cut). Time-limit ends go in `truncated`: the
+        value target still bootstraps, but the n-step window flushes.
+
+        The ring buffer stores each frame once (F9.7 uint8 economy, now
+        ~5.8x better) and matures n-step windows internally. Episode starts
+        are inferred: the first cache after construction or after any episode
+        end registers `state` as the reset observation.
         """
-        if self.config.n_step <= 1:
-            self._store(state, next_state, action, float(reward), bool(done), self.config.gamma)
-            return
-
-        self._nstep_queue.append((state, next_state, action, float(reward), bool(done)))
-        if len(self._nstep_queue) == self.config.n_step:
-            self._emit_window()
-            self._nstep_queue.popleft()
-        if done or truncated:
-            # flush partial windows: each remaining start gets a shortened
-            # return with discount gamma^k
-            while self._nstep_queue:
-                self._emit_window()
-                self._nstep_queue.popleft()
-
-    def _emit_window(self) -> None:
-        """Emit the n-step (or shorter, at episode end) transition starting at
-        the head of the queue: (s_0, ns_last, a_0, sum_i gamma^i r_i,
-        terminated_last, gamma^k)."""
-        gamma = self.config.gamma
-        q = self._nstep_queue
-        s0, _, a0, _, _ = q[0]
-        ret = 0.0
-        for i, (_, _, _, r_i, _) in enumerate(q):
-            ret += (gamma**i) * r_i
-        _, ns_last, _, _, term_last = q[-1]
-        self._store(s0, ns_last, a0, ret, term_last, gamma ** len(q))
-
-    def _store(self, state, next_state, action, reward: float, done: bool, discount: float) -> None:
-        # F9.7: store states as native dtype (typically uint8 from PyBoy).
-        # Converting to float32 here would 4x the buffer's memory footprint and
-        # blow Colab's ~12 GB host RAM at default deque_size=100K. Conversion +
-        # normalization happens in _recall on sampled batches instead.
-        state_t = torch.from_numpy(np.ascontiguousarray(state))
-        next_state_t = torch.from_numpy(np.ascontiguousarray(next_state))
-        self.memory.append(
-            (
-                state_t,
-                next_state_t,
-                torch.tensor([action], dtype=torch.long),
-                torch.tensor([reward], dtype=torch.float32),
-                torch.tensor([done], dtype=torch.float32),
-                torch.tensor([discount], dtype=torch.float32),
-            )
+        if self._needs_episode_start:
+            self.memory.begin_episode(np.asarray(state))
+            self._needs_episode_start = False
+        self.memory.add(
+            np.asarray(next_state), int(action), float(reward), bool(done), bool(truncated)
         )
+        if done or truncated:
+            self._needs_episode_start = True
 
     def _recall(self):
-        batch = random.sample(self.memory, self.config.batch_size)
-        s, ns, a, r, d, disc = map(torch.stack, zip(*batch))
-        # Float conversion (and optional /255) happens here on the sampled
-        # batch, not in cache — the buffer stays uint8 (F9.7). _prep applies
-        # the same transform act() uses, keeping train/inference aligned.
-        return (
-            self._prep(s.to(self.device)),
-            self._prep(ns.to(self.device)),
-            a.squeeze(1).to(self.device),
-            r.squeeze(1).to(self.device),
-            d.squeeze(1).to(self.device),
-            disc.squeeze(1).to(self.device),
-        )
+        s, ns, a, r, d, disc = self.memory.sample_torch(self.config.batch_size, self.device)
+        # _prep applies the same transform act() uses (optional /255),
+        # keeping train/inference aligned
+        return self._prep(s), self._prep(ns), a, r, d, disc
 
     # --- learning --------------------------------------------------------
-    def learn(self) -> tuple[float | None, float | None]:
-        if self.curr_step % self.config.sync_every == 0:
-            self.net.target.load_state_dict(self.net.online.state_dict())
+    def sync_target(self) -> None:
+        self.net.target.load_state_dict(self.net.online.state_dict())
 
-        # gate on buffer fill, not curr_step: resume restores curr_step but
-        # the buffer starts empty — learning from 32 correlated samples
-        # right after resume is a Q-collapse recipe
-        if len(self.memory) < max(self.config.burnin, self.config.batch_size):
-            return None, None
-        if self.curr_step % self.config.learn_every != 0:
-            return None, None
-
+    def train_step(self) -> tuple[float, float]:
+        """One gradient step from one sampled batch (no cadence gating)."""
         s, ns, a, r, d, disc = self._recall()
         idx = torch.arange(self.config.batch_size, device=self.device)
 
@@ -323,6 +282,20 @@ class DDQNAgent:
         torch.nn.utils.clip_grad_norm_(self.net.online.parameters(), self.config.grad_clip_norm)
         self.optimizer.step()
         return float(q_est.mean().item()), float(loss.item())
+
+    def learn(self) -> tuple[float | None, float | None]:
+        if self.curr_step % self.config.sync_every == 0:
+            self.sync_target()
+
+        # gate on buffer fill, not curr_step: resume restores curr_step but
+        # the buffer starts empty — learning from 32 correlated samples
+        # right after resume is a Q-collapse recipe
+        if len(self.memory) < max(self.config.burnin, self.config.batch_size):
+            return None, None
+        if self.curr_step % self.config.learn_every != 0:
+            return None, None
+
+        return self.train_step()
 
     # --- persistence -----------------------------------------------------
     def state_dict(self) -> dict:

@@ -88,7 +88,11 @@ deepEmulator/
   cartridges/       pokemon_red, pokemon_crystal, pokemon_coral, generic_gb, atari/pong.
                     __init__.py exposes load_all() — the ONLY way CLIs populate the
                     registry (no per-CLI import lists).
-  agents/           ddqn_torch (rank-3 → CNN, rank-1 → MLP — auto-dispatch)
+  agents/           ddqn_torch (rank-3 → CNN, rank-1 → MLP — auto-dispatch; dueling head;
+                    budget-relative epsilon; n-step returns)
+                    replay_buffer.py — preallocated ring, frame-dedup uint8 storage
+                    (576 MB vs 3.4 GB at 100K), per-env sub-rings, n-step matured
+                    in-buffer, truncation-aware bootstrap
   encoders/         vit.py (ViT-tiny), dino.py (loss + EMA teacher + trainer),
                     augmentations.py (multi-crop), frozen_wrapper.py (FrozenEncoderEnv)
   data/             frame_corpus.py (FrameRing + FrameStorage + FrameCollector)

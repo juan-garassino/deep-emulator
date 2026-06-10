@@ -19,21 +19,17 @@ def test_ddqn_forward_shape():
 
 
 def test_cache_stores_uint8_states_not_float32():
-    """F9.7: Replay buffer must keep state tensors at their source dtype (typically uint8)
-    so the buffer doesn't 4x-bloat in memory. Conversion to float happens in _recall."""
+    """F9.7 successor: pixel frames live in the ring as uint8 (stored ONCE per
+    step, not as stack pairs). Conversion to float happens at sample time."""
     from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
 
-    cfg = DDQNConfig(burnin=2, batch_size=2, deque_size=10, learn_every=1, sync_every=1000)
+    cfg = DDQNConfig(burnin=2, batch_size=2, deque_size=64, learn_every=1, sync_every=1000)
     agent = DDQNAgent(obs_shape=(3, 72, 80), n_actions=7, config=cfg, device="cpu")
     obs = np.zeros((3, 72, 80), dtype=np.uint8)
-    agent.cache(obs, obs, 0, 0.0, False)
-    state_tensor = agent.memory[0][0]
-    assert state_tensor.dtype == torch.uint8, (
-        f"buffer state must be uint8 for memory efficiency, got {state_tensor.dtype}"
-    )
-    # And _recall casts to float for the gradient step
-    for _ in range(3):
+    for _ in range(6):
         agent.cache(obs, obs, 0, 0.0, False)
+    assert agent.memory.frames.dtype == np.uint8
+    assert agent.memory.frames.shape[1:] == (72, 80)  # frame-dedup: no stack dim
     s, ns, a, r, d, disc = agent._recall()
     assert s.dtype == torch.float32
     assert ns.dtype == torch.float32
@@ -235,7 +231,9 @@ def test_legacy_non_dueling_state_dict_keys_unchanged():
 
 
 def test_nstep_return_math_hand_computed():
-    """n=3, rewards 1,2,3, gamma 0.5: R = 1 + 0.5*2 + 0.25*3 = 2.75, discount 0.125."""
+    """n=3, rewards 1,2,3, gamma 0.5: R = 1 + 0.5*2 + 0.25*3 = 2.75, discount
+    0.125. (Window mechanics covered in depth by tests/test_replay_buffer.py;
+    this asserts the AGENT delegates raw transitions correctly.)"""
     from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
 
     cfg = DDQNConfig(n_step=3, gamma=0.5, deque_size=100)
@@ -246,48 +244,31 @@ def test_nstep_return_math_hand_computed():
     assert len(agent.memory) == 0  # window not mature yet
     agent.cache(obs[2], obs[3], 0, 3.0, False)
     assert len(agent.memory) == 1
-    s, ns, a, r, d, disc = agent.memory[0]
-    assert float(r) == pytest.approx(2.75)
-    assert float(disc) == pytest.approx(0.125)
-    assert int(a) == 0  # action of the window's FIRST step
-    assert np.allclose(s.numpy(), obs[0])
-    assert np.allclose(ns.numpy(), obs[3])  # next_state of the window's LAST step
-    assert float(d) == 0.0
+    s, ns, a, r, d, disc = agent.memory.sample(1)
+    assert float(r[0]) == pytest.approx(2.75)
+    assert float(disc[0]) == pytest.approx(0.125)
+    assert int(a[0]) == 0  # action of the window's FIRST step
+    assert np.allclose(s[0], obs[0])
+    assert np.allclose(ns[0], obs[3])  # next_state of the window's LAST step
+    assert float(d[0]) == 0.0
 
 
-def test_nstep_flush_on_terminated_marks_done():
+def test_cache_restarts_episode_after_done_or_truncated():
+    """The shim must call begin_episode again after any episode end — the
+    ring's clipping reconstruction depends on it."""
     from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
 
-    cfg = DDQNConfig(n_step=3, gamma=0.5, deque_size=100)
+    cfg = DDQNConfig(n_step=1, gamma=0.9, deque_size=100)
     agent = DDQNAgent(obs_shape=(4,), n_actions=2, config=cfg, device="cpu")
-    obs = np.zeros((4,), dtype=np.float32)
-    agent.cache(obs, obs, 0, 1.0, False)
-    agent.cache(obs, obs, 0, 1.0, True)  # terminal on step 2
-    # flush: both partial windows emitted, queue empty
+    a_obs = np.full((4,), 1, dtype=np.float32)
+    b_obs = np.full((4,), 2, dtype=np.float32)
+    agent.cache(a_obs, a_obs, 0, 0.0, False, truncated=True)  # episode 1 ends
+    assert agent._needs_episode_start
+    agent.cache(b_obs, b_obs, 1, 0.0, True)  # episode 2: fresh begin_episode
     assert len(agent.memory) == 2
-    assert len(agent._nstep_queue) == 0
-    for entry in agent.memory:
-        *_, d, disc = entry
-        assert float(d) == 1.0
-    # first window spans 2 steps (disc 0.25), second spans 1 (disc 0.5)
-    assert float(agent.memory[0][5]) == pytest.approx(0.25)
-    assert float(agent.memory[1][5]) == pytest.approx(0.5)
-
-
-def test_nstep_flush_on_truncated_keeps_bootstrap():
-    """Truncation flushes the window but does NOT cut the bootstrap (d=0)."""
-    from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
-
-    cfg = DDQNConfig(n_step=3, gamma=0.5, deque_size=100)
-    agent = DDQNAgent(obs_shape=(4,), n_actions=2, config=cfg, device="cpu")
-    obs = np.zeros((4,), dtype=np.float32)
-    agent.cache(obs, obs, 0, 1.0, False)
-    agent.cache(obs, obs, 0, 1.0, False, truncated=True)
-    assert len(agent.memory) == 2
-    assert len(agent._nstep_queue) == 0
-    for entry in agent.memory:
-        *_, d, _ = entry
-        assert float(d) == 0.0
+    # episode-2 state must be b_obs (not stitched from episode 1)
+    slots = np.flatnonzero(agent.memory.complete)
+    assert agent.memory.ep_step[slots].tolist() == [0, 0]
 
 
 def test_nstep_1_matches_classic_behavior():
@@ -298,5 +279,5 @@ def test_nstep_1_matches_classic_behavior():
     obs = np.zeros((4,), dtype=np.float32)
     agent.cache(obs, obs, 1, 5.0, True)
     assert len(agent.memory) == 1
-    s, ns, a, r, d, disc = agent.memory[0]
-    assert float(r) == 5.0 and float(d) == 1.0 and float(disc) == pytest.approx(0.9)
+    s, ns, a, r, d, disc = agent.memory.sample(1)
+    assert float(r[0]) == 5.0 and float(d[0]) == 1.0 and float(disc[0]) == pytest.approx(0.9)
