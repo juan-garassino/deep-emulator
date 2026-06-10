@@ -78,3 +78,33 @@ def test_atari_pong_100_random_steps():
     # Pong scores points roughly every ~20-60 frames at random play.
     # 100 frames may not be enough to score — just assert nothing crashed.
     assert isinstance(saw_reward, bool)
+
+
+def test_cartridge_adapter_default_reset_episode_is_noop():
+    """reset_episode is part of the env contract — the ABC ships a no-op default
+    so stateless adapters stay tiny."""
+    from deepEmulator.cartridges.atari.pong import PongAdapter
+
+    a = PongAdapter()
+    a.reset_episode(None)  # must not raise
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("ale_py") is None,
+    reason="ale-py not installed (pip install -e '.[atari]')",
+)
+def test_atari_env_writes_action_set_back_to_cartridge():
+    """Bundles previously recorded action_set=[] for Atari — the env must
+    write the resolved minimal action set back to the adapter."""
+    from deepEmulator.cartridges.atari.pong import PongAdapter
+    from deepEmulator.platforms.atari import AtariEnv
+
+    adapter = PongAdapter()
+    assert adapter.action_set == []
+    env = AtariEnv(adapter, headless=True)
+    try:
+        assert adapter.action_set != []
+        assert all(isinstance(a, int) for a in adapter.action_set)
+        assert len(adapter.action_set) == env.action_space.n
+    finally:
+        env.close()

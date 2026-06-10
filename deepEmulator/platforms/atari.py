@@ -79,6 +79,8 @@ class AtariEnv(EmulatorEnv):
 
         self._minimal_actions = list(self.ale.getMinimalActionSet())
         self.action_space = Discrete(len(self._minimal_actions))
+        # write the resolved action set back so bundles record the real linkage
+        cartridge.action_set = [int(a) for a in self._minimal_actions]
 
         self._raw_h, self._raw_w = self.ale.getScreenDims()  # typically (210, 160)
         self._screen_a = np.zeros((self._raw_h, self._raw_w), dtype=np.uint8)
@@ -132,6 +134,7 @@ class AtariEnv(EmulatorEnv):
             self.ale.act(0)
             if self.ale.game_over():
                 self.ale.reset_game()
+        self.cartridge.reset_episode(self.ale)
         self._grab_grayscale(self._screen_a)
         first = _resize_grayscale_84(self._screen_a)
         self._stack[:] = 0

@@ -38,7 +38,7 @@ from deepEmulator.core.reward import PhasedReward, RewardPhase, constant_per_ste
 PLAYER_NAME = 0xD47D                # wPlayerName (11 bytes incl. terminator)
 JOHTO_BADGES = 0xD857               # wJohtoBadges (1-byte bitmask, 8 bits)
 KANTO_BADGES = 0xD858               # wKantoBadges (1-byte bitmask, 8 bits)
-MONEY = 0xD84E                      # wMoney (3 bytes BCD, big-endian)
+MONEY = 0xD84E                      # wMoney (3 bytes big-endian BINARY — BCD is Gen 1 only)
 EVENT_FLAGS_START = 0xDA72          # wEventFlags
 NUM_EVENTS = 800                    # from constants/event_flags.asm
 EVENT_FLAGS_END = EVENT_FLAGS_START + (NUM_EVENTS // 8)  # 0xDAD4 inclusive

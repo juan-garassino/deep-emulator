@@ -14,7 +14,7 @@ from typing import Any, Literal
 @dataclass
 class CartridgeAdapter(ABC):
     cartridge_title: str
-    platform: Literal["gameboy", "sega"]
+    platform: Literal["gameboy", "atari", "sega"]
     init_state: Path | None = None
     action_set: list[int] = field(default_factory=list)
     observation_shape: tuple[int, ...] = ()
@@ -27,6 +27,11 @@ class CartridgeAdapter(ABC):
 
     @abstractmethod
     def is_done(self, state: dict) -> bool: ...
+
+    def reset_episode(self, emulator: Any) -> None:
+        """Called by the env on every reset(). Stateful adapters (exploration
+        bookkeeping, reward baselines) MUST override this; stateless ones get
+        the no-op. Part of the env contract — both PyBoyEnv and AtariEnv call it."""
 
     def get_trajectory_coords(self, state: dict) -> tuple[int, int, int]:
         """(x, y, map_id) for arrow visualization. Override if applicable."""

@@ -184,8 +184,8 @@ def test_run_play_with_encoder_bundle_no_overlays(tmp_path):
 
 
 def test_run_play_respects_agent_enabled_toggle(tmp_path, monkeypatch):
-    """When agent_enabled.txt contains '0', the agent's act() is bypassed
-    (action 0 = NOOP is sent every step)."""
+    """When agent_enabled.txt contains '0', the agent's act() is bypassed.
+    On Game Boy the idle action is None (action 0 would press DOWN)."""
     from deepEmulator.inference import play as play_mod
 
     bundle = _make_pixel_bundle(tmp_path)
@@ -212,8 +212,8 @@ def test_run_play_respects_agent_enabled_toggle(tmp_path, monkeypatch):
         env_factory=lambda: _SpyEnv(episode_length=4),
     )
     assert rc == 0
-    # Every step should have been action=0 (NOOP) since the toggle is off
-    assert all(a == 0 for a in seen_actions), seen_actions
+    # Every step should have been the GB idle action (None) since the toggle is off
+    assert all(a is None for a in seen_actions), seen_actions
 
 
 def test_main_dispatches_run_play(monkeypatch, tmp_path):

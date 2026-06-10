@@ -86,3 +86,38 @@ def test_generic_gb_100_random_steps():
             break
 
     env.close()
+
+@requires_rom
+def test_reset_without_init_state_restores_boot_snapshot():
+    """Two resets must give identical first observations — reset() previously
+    left the emulator running from wherever the last episode ended."""
+    from deepEmulator.cartridges.generic_gb import GenericGameBoyAdapter
+    from deepEmulator.platforms.gameboy import PyBoyEnv
+
+    adapter = GenericGameBoyAdapter()
+    env = PyBoyEnv(adapter, rom_path=TEST_ROM, headless=True, max_steps=200)
+    try:
+        obs1, _ = env.reset()
+        rng = np.random.default_rng(0)
+        for _ in range(30):
+            env.step(int(rng.integers(0, env.action_space.n)))
+        obs2, _ = env.reset()
+        assert np.array_equal(obs1, obs2)
+    finally:
+        env.close()
+
+
+@requires_rom
+def test_step_none_is_idle_and_advances_time():
+    from deepEmulator.cartridges.generic_gb import GenericGameBoyAdapter
+    from deepEmulator.platforms.gameboy import PyBoyEnv
+
+    adapter = GenericGameBoyAdapter()
+    env = PyBoyEnv(adapter, rom_path=TEST_ROM, headless=True, max_steps=200)
+    try:
+        env.reset()
+        obs, r, term, trunc, info = env.step(None)
+        assert obs.shape == (3, 72, 80)
+        assert r == 0.0
+    finally:
+        env.close()

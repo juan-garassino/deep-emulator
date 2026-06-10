@@ -267,7 +267,10 @@ def run_play(
                 if agent_on:
                     action = agent.act(obs)
                 else:
-                    action = 0  # NOOP while paused
+                    # idle while paused. On Game Boy, action 0 is "down" — only
+                    # ALE has a true NOOP at index 0.
+                    is_gb = getattr(env.cartridge, "platform", "gameboy") == "gameboy"
+                    action = None if is_gb else 0
                 obs, r, term, trunc, info = env.step(action)
                 ep_reward += r
                 total_steps += 1
