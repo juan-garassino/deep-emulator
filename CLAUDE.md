@@ -84,7 +84,8 @@ Build system is `pyproject.toml` (PEP 621). `setup.py` is legacy and will be rem
 ```
 deepEmulator/
   core/             EmulatorEnv base, CartridgeAdapter ABC, registry, vendored spaces
-  platforms/        gameboy.py (PyBoy), atari.py (ale-py), sega.py (planned)
+  platforms/        gameboy.py (PyBoy), atari.py (ale-py), synthetic.py (SYNTH BLOB —
+                    ROM-free bouncing-blob env for tests + vec smokes), sega.py (planned)
   cartridges/       pokemon_red, pokemon_crystal, pokemon_coral, generic_gb, atari/pong.
                     __init__.py exposes load_all() — the ONLY way CLIs populate the
                     registry (no per-CLI import lists).
@@ -96,7 +97,9 @@ deepEmulator/
   encoders/         vit.py (ViT-tiny), dino.py (loss + EMA teacher + trainer),
                     augmentations.py (multi-crop), frozen_wrapper.py (FrozenEncoderEnv)
   data/             frame_corpus.py (FrameRing + FrameStorage + FrameCollector)
-  training/         train.py + colab_train.py (DDQN)
+  training/         train.py + colab_train.py (DDQN; --num-envs N spawns parallel workers)
+                    vec_runner.py (EnvSpec + spawn workers + lock-step VecEnvRunner;
+                    auto-reset in-reply; actions batched in the main process)
                     pretrain_dino.py + colab_pretrain.py (SSL)
                     collect_frames.py (corpus assembly)
                     eval.py (head-to-head HTML report + k-NN retrieval grid)
@@ -248,12 +251,14 @@ Phases I + II + III + IV + F8 + F9 are merged and passing — ~135 tests green, 
 **Makefile is the canonical user entrypoint** — `make help` prints all verbs grouped by stage. Typical flow:
 ```
 make install_dev → make verify_ram → make smoke_rom → make play (record init.state)
-PIXEL:    make train_pixel STEPS=100000
+PIXEL:    make train_pixel STEPS=100000 NUM_ENVS=8   (parallel workers; 1 = serial)
 DINO:     make collect_frames → make pretrain_dino → make train_encoder
 VIZ/EVAL: make visualize / make attention / make eval PIXEL=... TREAT=...
 COLAB:    make sync_to_drive DRIVE=...
-RUNPOD:   make runpod_build → make runpod_push → spin pod with GCS_BUCKET + GCS_PREFIX + MODE
+RUNPOD:   make runpod_build → make smoke_lifecycle → make runpod_push → spin pod
 ```
+
+Vec throughput measured on the dev Mac (4 workers, Coral ROM): 171 → 359 env-steps/s (2.1x; lock-step sync + 4 cores cap it — expect closer to linear on pod CPUs).
 
 **What's still unverified**:
 - Real Colab run hasn't happened. Notebook 08/09 are ready, dry-run cell catches most failures in 30s.

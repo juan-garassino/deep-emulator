@@ -10,6 +10,7 @@ INIT_STATE    ?= states/coral_init.state
 STEPS         ?= 5000
 EPISODE_STEPS ?= 2048
 SAVE_EVERY    ?= 1000
+NUM_ENVS      ?= 1
 DRIVE         ?= $(HOME)/Google\ Drive/My\ Drive/deepEmulator
 MODE          ?= train
 
@@ -129,17 +130,17 @@ play: ## open visible PyBoy window for recording an init.state (close window to 
 # ============================================================================
 ## === DDQN TRAINING ===
 # ============================================================================
-train_pixel: ## headless DDQN training on raw pixels (Phase I baseline)
+train_pixel: ## headless DDQN training on raw pixels (NUM_ENVS=8 for parallel workers)
 	@mkdir -p states checkpoints
 	@if [ -f "$(INIT_STATE)" ]; then \
 		$(PY) -m deepEmulator.training.train --cartridge "$(CART)" --rom $(ROM) \
 			--init-state $(INIT_STATE) --steps $(STEPS) --max-episode-steps $(EPISODE_STEPS) \
-			--save-every $(SAVE_EVERY) --headless; \
+			--save-every $(SAVE_EVERY) --num-envs $(NUM_ENVS) --headless; \
 	else \
 		echo "[train_pixel] no $(INIT_STATE) — running boot-only (plumbing-validation regime)"; \
 		$(PY) -m deepEmulator.training.train --cartridge "$(CART)" --rom $(ROM) \
 			--steps $(STEPS) --max-episode-steps $(EPISODE_STEPS) \
-			--save-every $(SAVE_EVERY) --headless; \
+			--save-every $(SAVE_EVERY) --num-envs $(NUM_ENVS) --headless; \
 	fi
 
 train_encoder: ## headless DDQN training on frozen DINO latents (Phase II)

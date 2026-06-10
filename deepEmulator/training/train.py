@@ -61,6 +61,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Re-add the start button to adapters that drop it by default.",
     )
     p.add_argument(
+        "--num-envs",
+        type=int,
+        default=1,
+        help="Parallel worker envs (spawned processes). 1 = the classic serial loop.",
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
         help="Continue from the latest run under checkpoints/<slug>/ (Drive-friendly).",
@@ -107,6 +113,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     from deepEmulator.utils.logger import MetricLogger
 
+    from deepEmulator.training.vec_runner import EnvSpec, build_env
+
+    args.num_envs = max(1, args.num_envs)
+    if args.num_envs > 1 and not args.headless:
+        raise SystemExit("--num-envs > 1 requires --headless (workers have no display)")
+    if args.num_envs > 1 and args.encoder is not None:
+        raise SystemExit(
+            "--encoder with --num-envs > 1 is not supported yet "
+            "(batched main-process encoding is a named follow-up) — drop one of the two"
+        )
+
+    spec = EnvSpec(
+        cartridge=args.cartridge,
+        rom_path=str(args.rom) if args.rom else None,
+        init_state=str(args.init_state) if args.init_state else None,
+        max_episode_steps=args.max_episode_steps,
+        reward_clip=args.reward_clip,
+        include_start=args.include_start,
+    )
+
     AdapterCls = registry.get(args.cartridge)
     adapter_kwargs: dict = {"init_state": args.init_state}
     if args.include_start and any(
@@ -138,14 +164,19 @@ def main(argv: list[str] | None = None) -> int:
             args.run_dir = cartridge_root / stamp
     args.run_dir.mkdir(parents=True, exist_ok=True)
 
-    env = PyBoyEnv(
-        adapter,
-        rom_path=args.rom,
-        init_state=args.init_state,
-        headless=args.headless,
-        max_steps=args.max_episode_steps,
-        reward_clip=args.reward_clip,
-    )
+    if args.num_envs > 1 or args.cartridge.upper() == "SYNTH BLOB":
+        # workers own the real envs; this one only provides spaces + metadata
+        env = build_env(spec)
+        adapter = env.cartridge
+    else:
+        env = PyBoyEnv(
+            adapter,
+            rom_path=args.rom,
+            init_state=args.init_state,
+            headless=args.headless,
+            max_steps=args.max_episode_steps,
+            reward_clip=args.reward_clip,
+        )
     inner_env = env  # pre-wrap reference for the metadata env block
 
     encoder_metadata: dict | None = None
@@ -171,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         normalize_obs=len(obs_shape) == 3,  # pixels only; latents pass through
         dueling=args.dueling,
         n_step=max(1, args.n_step),
+        n_envs=args.num_envs,
     )
 
     resume_state: dict | None = None
@@ -272,10 +304,23 @@ def main(argv: list[str] | None = None) -> int:
             extra=extra,
         )
 
+    print(f"[deepemu-train] {args.cartridge} | run_dir={args.run_dir} | device={agent.device}")
+
+    if args.num_envs > 1:
+        env.close()  # the probe served its purpose; workers own the real envs
+        return _vec_loop(
+            args=args,
+            spec=spec,
+            agent=agent,
+            logger=logger,
+            wb=wb,
+            save_bundle=_save_bundle,
+            TrajectoryWriter=TrajectoryWriter,
+        )
+
     episode = 0
     obs, info = env.reset()
     trajectories.start_episode(episode)
-    print(f"[deepemu-train] {args.cartridge} | run_dir={args.run_dir} | device={agent.device}")
 
     try:
         while agent.curr_step < args.steps:
@@ -331,6 +376,125 @@ def main(argv: list[str] | None = None) -> int:
         env.close()
         wb.finish()
     print(f"[deepemu-train] done. bundle at {args.run_dir}")
+    return 0
+
+
+def _vec_loop(*, args, spec, agent, logger, wb, save_bundle, TrajectoryWriter) -> int:
+    """N parallel worker envs feeding the per-env sub-rings, actions batched
+    on the agent's device. Learn cadence is fractional: num_envs/learn_every
+    gradient steps accrue per iteration (the serial `curr_step % learn_every`
+    check breaks outright when stepping by N)."""
+    import numpy as np
+
+    from deepEmulator.training.vec_runner import VecEnvRunner
+
+    cfg = agent.config
+    n = args.num_envs
+    base_seed = args.seed if args.seed is not None else 0
+    runner = VecEnvRunner(spec, n, base_seed=base_seed)
+    writers = [TrajectoryWriter(args.run_dir) for _ in range(n)]
+
+    episode = 0
+    ep_reward = np.zeros(n, dtype=np.float64)
+    ep_len = np.zeros(n, dtype=np.int64)
+    loss_window: list[float] = []
+    q_window: list[float] = []
+    pending = 0.0
+    last_sync_bucket = agent.curr_step // cfg.sync_every
+    last_save_bucket = agent.curr_step // args.save_every
+
+    try:
+        obs = runner.reset(base_seed=base_seed)
+        for e in range(n):
+            agent.memory.begin_episode(obs[e], env_id=e)
+            writers[e].start_episode(episode)
+            episode += 1
+
+        while agent.curr_step < args.steps:
+            actions = agent.act_batch(obs)
+            batch = runner.step(actions)
+
+            for e in range(n):
+                done_e = bool(batch.terminated[e] or batch.truncated[e])
+                # the buffer needs the TERMINAL obs; batch.obs[e] is already
+                # the next episode's first obs when the worker auto-reset
+                next_obs_e = batch.pre_reset_obs[e] if done_e else batch.obs[e]
+                agent.memory.add(
+                    next_obs_e,
+                    int(actions[e]),
+                    float(batch.rewards[e]),
+                    bool(batch.terminated[e]),
+                    bool(batch.truncated[e]),
+                    env_id=e,
+                )
+                ep_reward[e] += batch.rewards[e]
+                ep_len[e] += 1
+                traj = batch.infos[e].get("trajectory")
+                if traj is not None:
+                    writers[e].write(
+                        agent.curr_step, traj[0], traj[1], traj[2],
+                        int(actions[e]), float(batch.rewards[e]),
+                    )
+                if done_e:
+                    row = logger.log_episode(
+                        episode=episode,
+                        step=agent.curr_step,
+                        epsilon=agent.exploration_rate,
+                        reward_sum=float(ep_reward[e]),
+                        length=int(ep_len[e]),
+                        loss_mean=float(np.mean(loss_window)) if loss_window else 0.0,
+                        q_mean=float(np.mean(q_window)) if q_window else 0.0,
+                    )
+                    wb.log(
+                        {
+                            "episode": episode,
+                            "MeanReward": float(row["MeanReward"]),
+                            "MeanLength": float(row["MeanLength"]),
+                            "epsilon": float(agent.exploration_rate),
+                        },
+                        step=agent.curr_step,
+                    )
+                    print(
+                        f"  ep {episode:4d} (env {e}) | step {agent.curr_step:7d} "
+                        f"| eps {row['Epsilon']} | meanR {row['MeanReward']}"
+                    )
+                    agent.memory.begin_episode(batch.obs[e], env_id=e)
+                    writers[e].start_episode(episode)
+                    episode += 1
+                    ep_reward[e] = 0.0
+                    ep_len[e] = 0
+
+            # fractional learn cadence — preserves gradient-steps : env-steps
+            pending += n / cfg.learn_every
+            while pending >= 1.0:
+                pending -= 1.0
+                if len(agent.memory) >= max(cfg.burnin, cfg.batch_size):
+                    q, loss = agent.train_step()
+                    loss_window.append(loss)
+                    q_window.append(q)
+                    if len(loss_window) > 200:
+                        loss_window.pop(0)
+                        q_window.pop(0)
+
+            sync_bucket = agent.curr_step // cfg.sync_every
+            if sync_bucket != last_sync_bucket:
+                agent.sync_target()
+                last_sync_bucket = sync_bucket
+
+            save_bucket = agent.curr_step // args.save_every
+            if save_bucket != last_save_bucket:
+                save_bundle()
+                last_save_bucket = save_bucket
+
+            obs = batch.obs
+    finally:
+        for w in writers:
+            w.close()
+        logger.plot()
+        save_bundle()
+        runner.close()
+        wb.finish()
+    print(f"[deepemu-train] done ({n} envs). bundle at {args.run_dir}")
     return 0
 
 

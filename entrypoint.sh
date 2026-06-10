@@ -25,6 +25,7 @@ CARTRIDGE="${CARTRIDGE:-POKEMON CORAL}"
 STEPS="${STEPS:-5000}"
 SAVE_EVERY="${SAVE_EVERY:-1000}"
 EPISODE_STEPS="${EPISODE_STEPS:-2048}"
+NUM_ENVS="${NUM_ENVS:-1}"
 SYNC_EVERY_SECS="${SYNC_EVERY_SECS:-300}"
 
 RUNS_ROOT="${RUNS_ROOT:-/runs}"
@@ -250,6 +251,7 @@ case "${MODE}" in
             --steps "${STEPS}"
             --max-episode-steps "${EPISODE_STEPS}"
             --save-every "${SAVE_EVERY}"
+            --num-envs "${NUM_ENVS}"
             --run-dir "${RUN_DIR}"
             --headless
         )

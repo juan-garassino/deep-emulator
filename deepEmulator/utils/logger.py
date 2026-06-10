@@ -84,6 +84,42 @@ class MetricLogger:
         self._t_last = now
         return row
 
+    def log_episode(
+        self,
+        *,
+        episode: int,
+        step: int,
+        epsilon: float,
+        reward_sum: float,
+        length: int,
+        loss_mean: float = 0.0,
+        q_mean: float = 0.0,
+    ) -> dict:
+        """Vectorized-runner entry point: record a COMPLETE episode in one call
+        (the serial log_step/end_episode pair assumes one live episode).
+        Emits the same TSV row format."""
+        self._ep_rewards.append(reward_sum)
+        self._ep_lengths.append(length)
+        self._ep_losses.append(loss_mean)
+        self._ep_qs.append(q_mean)
+
+        now = time()
+        row = {
+            "Episode": episode,
+            "Step": step,
+            "Epsilon": f"{epsilon:.4f}",
+            "MeanReward": f"{sum(self._ep_rewards) / len(self._ep_rewards):.3f}",
+            "MeanLength": f"{sum(self._ep_lengths) / len(self._ep_lengths):.1f}",
+            "MeanLoss": f"{sum(self._ep_losses) / len(self._ep_losses):.4f}",
+            "MeanQValue": f"{sum(self._ep_qs) / len(self._ep_qs):.4f}",
+            "TimeDelta": f"{now - self._t_last:.2f}",
+            "Time": f"{now - self._t0:.2f}",
+        }
+        with open(self.path, "a") as f:
+            f.write("\t".join(str(row[c]) for c in self.HEADER) + "\n")
+        self._t_last = now
+        return row
+
     def plot(self) -> None:  # pragma: no cover - requires viz extra
         """Render reward/length/loss/q JPGs into {run_dir}/plots/. Needs matplotlib."""
         try:

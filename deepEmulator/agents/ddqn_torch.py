@@ -44,6 +44,8 @@ class DDQNConfig:
     # dueling V/A head. Off by default so old model.pt state-dict keys keep
     # loading; train.py defaults new runs to on and records it in metadata.
     dueling: bool = False
+    # number of parallel envs feeding the buffer (per-env sub-rings)
+    n_envs: int = 1
     # n-step returns. 1 = classic one-step TD (byte-identical to the old
     # behavior). >1 aggregates R = sum(gamma^i * r_i) before insertion and
     # bootstraps with gamma^n; partial windows flush at episode end.
@@ -187,6 +189,7 @@ class DDQNAgent:
         self.memory = ReplayBuffer(
             self.config.deque_size,
             obs_shape,
+            n_envs=self.config.n_envs,
             n_step=self.config.n_step,
             gamma=self.config.gamma,
         )
@@ -223,15 +226,36 @@ class DDQNAgent:
             action = self._greedy(state)
 
         self.curr_step += 1
+        self._update_epsilon(steps=1)
+        return action
+
+    def _update_epsilon(self, steps: int) -> None:
+        # SEAM: the single epsilon plug point for serial and batched stepping
         if self.config.exploration_anneal_steps is not None:
             frac = min(1.0, self.curr_step / max(1, self.config.exploration_anneal_steps))
             self.exploration_rate = 1.0 - (1.0 - self.config.exploration_rate_min) * frac
         else:
             self.exploration_rate = max(
                 self.config.exploration_rate_min,
-                self.exploration_rate * self.config.exploration_rate_decay,
+                self.exploration_rate * self.config.exploration_rate_decay**steps,
             )
-        return action
+
+    def act_batch(self, states: np.ndarray) -> np.ndarray:
+        """Batched epsilon-greedy for the vectorized runner: ONE forward over
+        (N, *obs) on the agent device, per-env Bernoulli(eps) random swap-in.
+        Advances curr_step by N."""
+        states = np.asarray(states)
+        n = states.shape[0]
+        with torch.no_grad():
+            s = torch.from_numpy(states).to(self.device)
+            q = self.net(self._prep(s), mode="online")
+            greedy = q.argmax(dim=1).cpu().numpy()
+        explore_mask = np.random.random(n) < self.exploration_rate
+        randoms = np.random.randint(0, self.n_actions, size=n)
+        actions = np.where(explore_mask, randoms, greedy)
+        self.curr_step += n
+        self._update_epsilon(steps=n)
+        return actions
 
     # --- replay buffer ---------------------------------------------------
     def cache(self, state, next_state, action, reward, done, truncated: bool = False) -> None:

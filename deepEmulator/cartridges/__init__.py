@@ -12,6 +12,7 @@ _CARTRIDGE_MODULES = (
     "deepEmulator.cartridges.pokemon_coral",
     "deepEmulator.cartridges.generic_gb",
     "deepEmulator.cartridges.atari.pong",
+    "deepEmulator.platforms.synthetic",  # SYNTH BLOB — ROM-free testing/vec smoke
 )
 
 
