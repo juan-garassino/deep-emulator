@@ -21,8 +21,11 @@ can simply return `self._phased.compute(prev, curr, pyboy)`.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 PhasePredicate = Callable[[dict, Any], bool]
@@ -54,21 +57,33 @@ class PhasedReward:
 
     Tracks `last_phase` for diagnostics — useful for verifying that an agent
     transitioned out of the boot phase as expected.
+
+    `strict=True` re-raises predicate/compute exceptions instead of swallowing
+    them — turn it on in tests and smoke runs so a wrong RAM address (the
+    `# VERIFY` constants) fails loudly instead of silently zeroing rewards
+    on a paid GPU run.
     """
     phases: list[RewardPhase] = field(default_factory=list)
     last_phase: str | None = None
+    strict: bool = False
 
     def compute(self, prev_state: dict, curr_state: dict, emulator: Any) -> float:
         for phase in self.phases:
             try:
                 active = bool(phase.is_active(curr_state, emulator))
             except Exception:
+                logger.exception("phase %r is_active failed — treating as inactive", phase.name)
+                if self.strict:
+                    raise
                 active = False
             if active:
                 self.last_phase = phase.name
                 try:
                     return float(phase.compute(prev_state, curr_state, emulator))
                 except Exception:
+                    logger.exception("phase %r compute failed — returning 0.0", phase.name)
+                    if self.strict:
+                        raise
                     return 0.0
         self.last_phase = None
         return 0.0

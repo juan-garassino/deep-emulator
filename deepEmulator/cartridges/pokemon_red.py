@@ -74,6 +74,7 @@ class PokemonRedAdapter(CartridgeAdapter):
 
     reward_scale: float = 1.0
     explore_weight: float = 1.0
+    stuck_weight: float = -0.05
 
     # per-episode state
     seen_coords: dict[str, int] = field(default_factory=dict)
@@ -135,9 +136,16 @@ class PokemonRedAdapter(CartridgeAdapter):
             else:
                 self.died_count += 1
         self.last_health = cur
+        # refresh AFTER the check — otherwise heal is dead for the rest of
+        # the episode after any party-size change (upstream PWhiddy refreshes
+        # every step; the port dropped this line)
+        self.party_size = int(pyboy.memory[PARTY_SIZE])
 
     # --- reward components --------------------------------------------------
     def _reward_components(self, pyboy: Any) -> dict[str, float]:
+        # stuck is a direct per-step penalty in compute_reward, not a
+        # component — inside the totals delta it fired once and refunded
+        # itself when the agent left the tile
         cur_events = self._events_reward(pyboy)
         self.max_event_rew = max(cur_events, self.max_event_rew)
         return {
@@ -145,7 +153,6 @@ class PokemonRedAdapter(CartridgeAdapter):
             "heal": self.reward_scale * self.total_healing_rew * 10,
             "badge": self.reward_scale * self._badges(pyboy) * 10,
             "explore": self.reward_scale * self.explore_weight * len(self.seen_coords) * 0.1,
-            "stuck": self.reward_scale * self._stuck_penalty(pyboy) * -0.05,
         }
 
     # --- CartridgeAdapter interface ----------------------------------------
@@ -169,6 +176,7 @@ class PokemonRedAdapter(CartridgeAdapter):
         new_total = sum(components.values())
         delta = new_total - self._total_reward
         self._total_reward = new_total
+        delta += self.reward_scale * self.stuck_weight * self._stuck_penalty(emulator)
         return delta
 
     def is_done(self, state: dict) -> bool:

@@ -197,6 +197,15 @@ Phases are checked top-down so they form a partition. The fallback phase guarant
 
 A subclass-derived cartridge (like `PokemonCoralAdapter(PokemonCrystalAdapter)`) inherits the phase definitions automatically. To customize phase weights per cartridge, override the dataclass fields (`boot_step_reward`, `badge_weight`, etc.) — no need to rewrite the phase list.
 
+Post-audit semantics (2026-06-10 fix round):
+- **Stuck penalty is a direct per-step term**, not a totals-delta component (the old form fired once at the 600-visit threshold and *refunded* itself when the agent left the tile).
+- **Boot keeps the totals baseline current** so the boot→tutorial transition doesn't pay a ~+20 lump sum of intro event flags in one step.
+- **`party_size` refreshes every `_update_heal`** — heal credit survives catches (it was permanently dead after any party change).
+- **`PhasedReward(strict=True)`** re-raises predicate/compute exceptions instead of swallowing them — on in `make smoke_rom` and the ROM-gated tests, so a wrong `# VERIFY` RAM address fails loudly before a paid run. Default off in training.
+- **`is_done`: party wipe is a true terminal** (`faint_terminal=True` default, party≥1 and hp_fraction 0); everything else is env truncation.
+- **GB action set default is 6 buttons** — `start` is opt-in via `include_start=True` / `deepemu-train --include-start` (menu spam burned ~1/7 of exploration). Old 7-action bundles keep working: play/eval rebuild the adapter from the bundle's recorded `action_set`.
+- **`PyBoyEnv(reward_clip=5.0)`** clamps per-step reward (CLI `--reward-clip`, ≤0 disables).
+
 ## Honest project status
 
 Phases I + II + III + IV + F8 + F9 are merged and passing — ~135 tests green, 4 ROM-gated skips (Pokemon Red 100-step, Atari Pong 100-step, Crystal smoke, Crystal init-script).

@@ -59,7 +59,10 @@ X_COORD = 0xDCB8                    # wXCoord  # VERIFY
 BATTLE_MODE = 0xD22D                # wBattleMode (0=overworld, 1=wild, 2=trainer)  # VERIFY
 
 # PyBoy 7-action standard GB button set
-ACTIONS = ["down", "left", "right", "up", "a", "b", "start"]
+# default drops "start": menu spam burns ~1/7 of exploratory actions in
+# reward-neutral menus and nothing in the early game requires it. Opt back
+# in per-adapter with include_start=True.
+ACTIONS = ["down", "left", "right", "up", "a", "b"]
 
 
 def _bit_count(b: int) -> int:
@@ -122,6 +125,10 @@ class PokemonCrystalAdapter(CartridgeAdapter):
     # Boot phase: per-action nudge + bonus when party first appears
     boot_step_reward: float = 0.01
     boot_acquire_bonus: float = 1.0
+    # opt-in extras
+    include_start: bool = False  # re-add the "start" button to the action set
+    reward_strict: bool = False  # re-raise reward-phase exceptions (tests/smokes)
+    faint_terminal: bool = True  # terminate the episode when the whole party faints
 
     # per-episode state (reset_episode wipes these)
     seen_coords: dict[str, int] = field(default_factory=dict)
@@ -139,6 +146,10 @@ class PokemonCrystalAdapter(CartridgeAdapter):
     _prev_party_size: int = 0
     # Phased reward (lazily built on first reset_episode)
     _phased: PhasedReward | None = None
+
+    def __post_init__(self) -> None:
+        if self.include_start and "start" not in self.action_set:
+            self.action_set = [*self.action_set, "start"]
 
     # --- RAM reads -----------------------------------------------------------
     def _coords(self, pyboy: Any) -> tuple[int, int, int, int]:
@@ -204,9 +215,18 @@ class PokemonCrystalAdapter(CartridgeAdapter):
             else:
                 self.died_count += 1
         self.last_health = cur
+        # refresh AFTER the check (the check suppresses heal credit on the
+        # step a new mon joins). Without this refresh, party_size stays at its
+        # reset value and the heal component is dead for the whole episode
+        # after any catch.
+        self.party_size = int(pyboy.memory[PARTY_COUNT])
 
     # --- reward components ---------------------------------------------------
     def _reward_components(self, pyboy: Any) -> dict[str, float]:
+        # NOTE: stuck is NOT a component. As an indicator inside the totals
+        # delta it fired once at the 600-visit threshold and even REFUNDED
+        # +|weight| when the agent left the tile. It's a direct per-step
+        # penalty in the phase computes instead.
         cur_events = self._events_progress(pyboy)
         self.max_event_rew = max(cur_events, self.max_event_rew)
         return {
@@ -217,7 +237,6 @@ class PokemonCrystalAdapter(CartridgeAdapter):
                 self.reward_scale * self.explore_weight * len(self.seen_coords) * 0.1
             ),
             "levels": self.reward_scale * self._levels_sum(pyboy) * self.levels_weight,
-            "stuck": self.reward_scale * self._stuck_penalty(pyboy) * self.stuck_weight,
         }
 
     # --- phased reward construction -----------------------------------------
@@ -249,6 +268,10 @@ class PokemonCrystalAdapter(CartridgeAdapter):
             # tracker for the NEXT step's predicate decision.
             r = boot_compute(prev, curr, pyboy)
             adapter._prev_party_size = curr.get("party_size", 0)
+            # keep the totals baseline current during boot — otherwise intro
+            # event flags + starter levels accumulate unpaid and the first
+            # tutorial step pays a ~+20 lump sum in one transition
+            adapter._total_reward = sum(adapter._reward_components(pyboy).values())
             return r
 
         boot = RewardPhase(
@@ -261,6 +284,7 @@ class PokemonCrystalAdapter(CartridgeAdapter):
             adapter._update_seen(pyboy)
             adapter._update_heal(pyboy)
             r = _delta(pyboy)
+            r += adapter.reward_scale * adapter.stuck_weight * adapter._stuck_penalty(pyboy)
             adapter._prev_party_size = curr.get("party_size", 0)
             return r
 
@@ -274,6 +298,7 @@ class PokemonCrystalAdapter(CartridgeAdapter):
             adapter._update_seen(pyboy)
             adapter._update_heal(pyboy)
             r = _delta(pyboy)
+            r += adapter.reward_scale * adapter.stuck_weight * adapter._stuck_penalty(pyboy)
             adapter._prev_party_size = curr.get("party_size", 0)
             return r
 
@@ -283,7 +308,7 @@ class PokemonCrystalAdapter(CartridgeAdapter):
             compute=_main_compute,
         )
 
-        return PhasedReward(phases=[boot, tutorial, main])
+        return PhasedReward(phases=[boot, tutorial, main], strict=self.reward_strict)
 
     # --- CartridgeAdapter interface -----------------------------------------
     def reset_episode(self, pyboy: Any) -> None:
@@ -331,7 +356,13 @@ class PokemonCrystalAdapter(CartridgeAdapter):
         return self._phased.last_phase if self._phased else None
 
     def is_done(self, state: dict) -> bool:
-        return False  # episode bounded by env max_steps
+        # party wipe = true terminal (the only one on the GB path). Bounded
+        # episodes otherwise come from the env's max_steps truncation.
+        return bool(
+            self.faint_terminal
+            and state.get("party_size", 0) >= 1
+            and state.get("hp_fraction", 1.0) <= 0.0
+        )
 
     def get_trajectory_coords(self, state: dict) -> tuple[int, int, int]:
         return state["x"], state["y"], state["map_id"]

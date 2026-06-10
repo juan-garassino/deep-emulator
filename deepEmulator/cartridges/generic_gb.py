@@ -18,8 +18,9 @@ from deepEmulator.core.cartridge import CartridgeAdapter
 from deepEmulator.core.registry import register
 
 
-# Standard 7-button GB action set, button names matching PyBoy 2.x API
-_DEFAULT_ACTIONS = ["down", "left", "right", "up", "a", "b", "start"]
+# Default GB action set, button names matching PyBoy 2.x API. "start" is
+# opt-in (include_start=True) — menu spam wastes exploratory actions.
+_DEFAULT_ACTIONS = ["down", "left", "right", "up", "a", "b"]
 
 
 @dataclass
@@ -29,6 +30,11 @@ class GenericGameBoyAdapter(CartridgeAdapter):
     init_state: Any = None
     action_set: list = field(default_factory=lambda: list(_DEFAULT_ACTIONS))
     observation_shape: tuple = (3, 72, 80)
+    include_start: bool = False
+
+    def __post_init__(self) -> None:
+        if self.include_start and "start" not in self.action_set:
+            self.action_set = [*self.action_set, "start"]
 
     def reset_episode(self, emulator: Any) -> None:
         pass

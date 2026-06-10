@@ -107,15 +107,15 @@ verify_ram: ## load $(CART) + print dump_state — sanity-check # VERIFY RAM add
 		env = PyBoyEnv(a, rom_path='$(ROM)', headless=True, max_steps=20); \
 		env.reset(); print(dump_state(env.pyboy)); env.close()"
 
-smoke_rom: ## 200 random steps against $(ROM) — verifies env + reward end-to-end
+smoke_rom: ## 200 random steps against $(ROM) — verifies env + reward end-to-end (strict reward mode)
 	@$(PY) -c "import numpy as np; \
-		from deepEmulator.cartridges import pokemon_coral, pokemon_crystal, pokemon_red; \
+		from deepEmulator.cartridges import load_all; load_all(); \
 		from deepEmulator.core import registry; \
 		from deepEmulator.platforms.gameboy import PyBoyEnv; \
-		a = registry.get('$(CART)')(); \
+		a = registry.get('$(CART)')(reward_strict=True); \
 		env = PyBoyEnv(a, rom_path='$(ROM)', headless=True, max_steps=300); \
 		env.reset(); rng = np.random.default_rng(0); rewards = []; \
-		[rewards.append(env.step(int(rng.integers(0, 7)))[1]) for _ in range(200)]; \
+		[rewards.append(env.step(int(rng.integers(0, env.action_space.n)))[1]) for _ in range(200)]; \
 		print(f'sum={sum(rewards):.3f} max={max(rewards):.4f} nonzero={sum(1 for r in rewards if r!=0)}/200'); \
 		print(f'phase: {a.current_phase()}'); env.close()"
 

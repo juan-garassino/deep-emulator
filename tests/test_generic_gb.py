@@ -29,7 +29,8 @@ def test_generic_gb_adapter_defaults():
 
     a = GenericGameBoyAdapter()
     assert a.platform == "gameboy"
-    assert len(a.action_set) == 7
+    assert a.action_set == ["down", "left", "right", "up", "a", "b"]  # start is opt-in
+    assert GenericGameBoyAdapter(include_start=True).action_set[-1] == "start"
     assert a.observation_shape == (3, 72, 80)
     assert a.is_done({}) is False
 

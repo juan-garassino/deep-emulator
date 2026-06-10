@@ -44,6 +44,7 @@ class PyBoyEnv(EmulatorEnv):
         max_steps: int = 20_480,
         frame_stack: int = 3,
         boot_ticks: int = 60,
+        reward_clip: float | None = 5.0,
     ):
         super().__init__(cartridge)
         from pyboy import PyBoy  # local import so import-only tests don't require pyboy
@@ -55,6 +56,9 @@ class PyBoyEnv(EmulatorEnv):
         self.press_ticks = press_ticks
         self.max_steps = max_steps
         self.frame_stack = frame_stack
+        # GB reward deltas span ~0.01 (boot tick) to 10+ (badge) — clamp so a
+        # single transition can't dominate the Huber targets. None disables.
+        self.reward_clip = reward_clip if (reward_clip or 0) > 0 else None
 
         self.pyboy = PyBoy(self.rom_path, window="null" if headless else "SDL2")
         if not headless:
@@ -138,6 +142,8 @@ class PyBoyEnv(EmulatorEnv):
         self._send_action(action)
         curr_state = self.cartridge.read_game_state(self.pyboy)
         reward = self.cartridge.compute_reward(self._prev_state, curr_state, self.pyboy)
+        if self.reward_clip is not None:
+            reward = max(-self.reward_clip, min(self.reward_clip, reward))
         self._push_frame(self._grab_frame())
 
         self._step_count += 1

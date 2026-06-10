@@ -11,6 +11,7 @@ trajectories/ + metrics.tsv every `--save-every` steps and at exit.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as _dt
 from pathlib import Path
 
@@ -47,6 +48,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Seed random/numpy/torch for reproducible runs; recorded in metadata.",
+    )
+    p.add_argument(
+        "--reward-clip",
+        type=float,
+        default=5.0,
+        help="Clamp per-step reward to [-x, x] (GB path). <=0 disables.",
+    )
+    p.add_argument(
+        "--include-start",
+        action="store_true",
+        help="Re-add the start button to adapters that drop it by default.",
     )
     p.add_argument(
         "--resume",
@@ -96,7 +108,12 @@ def main(argv: list[str] | None = None) -> int:
     from deepEmulator.utils.logger import MetricLogger
 
     AdapterCls = registry.get(args.cartridge)
-    adapter = AdapterCls(init_state=args.init_state)
+    adapter_kwargs: dict = {"init_state": args.init_state}
+    if args.include_start and any(
+        f.name == "include_start" for f in dataclasses.fields(AdapterCls)
+    ):
+        adapter_kwargs["include_start"] = True
+    adapter = AdapterCls(**adapter_kwargs)
 
     slug = args.cartridge.lower().replace(" ", "_")
     cartridge_root = args.runs_root / slug
@@ -121,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         init_state=args.init_state,
         headless=args.headless,
         max_steps=args.max_episode_steps,
+        reward_clip=args.reward_clip,
     )
     inner_env = env  # pre-wrap reference for the metadata env block
 

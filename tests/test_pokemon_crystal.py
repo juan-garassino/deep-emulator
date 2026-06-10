@@ -46,8 +46,9 @@ def test_adapter_defaults():
 
     a = PokemonCrystalAdapter()
     assert a.platform == "gameboy"
-    assert len(a.action_set) == 7
+    assert a.action_set == ["down", "left", "right", "up", "a", "b"]  # start is opt-in
     assert a.observation_shape == (3, 72, 80)
+    assert PokemonCrystalAdapter(include_start=True).action_set[-1] == "start"
 
 
 # --- helper-level correctness ---------------------------------------------
@@ -311,7 +312,7 @@ def test_pokemon_crystal_100_random_steps():
     from deepEmulator.cartridges.pokemon_crystal import PokemonCrystalAdapter, dump_state
     from deepEmulator.platforms.gameboy import PyBoyEnv
 
-    adapter = PokemonCrystalAdapter(init_state=STATE)
+    adapter = PokemonCrystalAdapter(init_state=STATE, reward_strict=True)
     env = PyBoyEnv(adapter, rom_path=ROM, init_state=STATE, headless=True, max_steps=200)
 
     obs, info = env.reset()
@@ -330,3 +331,146 @@ def test_pokemon_crystal_100_random_steps():
     env.close()
     # Reward should at least change across steps as exploration accumulates
     assert any(r != 0.0 for r in rewards) or len(set(rewards)) >= 1
+
+
+# --- Phase 6 fixes ----------------------------------------------------------
+def _mon_hp(values: dict, mon_idx: int, hp: int, max_hp: int) -> None:
+    from deepEmulator.cartridges.pokemon_crystal import (
+        PARTY_MONS, PARTYMON_HP_OFFSET, PARTYMON_MAXHP_OFFSET, PARTYMON_STRUCT_LEN,
+    )
+
+    base = PARTY_MONS + mon_idx * PARTYMON_STRUCT_LEN
+    values[base + PARTYMON_HP_OFFSET] = hp >> 8
+    values[base + PARTYMON_HP_OFFSET + 1] = hp & 0xFF
+    values[base + PARTYMON_MAXHP_OFFSET] = max_hp >> 8
+    values[base + PARTYMON_MAXHP_OFFSET + 1] = max_hp & 0xFF
+
+
+def test_heal_reward_survives_party_growth():
+    """party_size must refresh every step — previously it was set only at
+    reset, so the weight-10 heal component was dead after any catch."""
+    from deepEmulator.cartridges.pokemon_crystal import PARTY_COUNT, PokemonCrystalAdapter
+
+    a = PokemonCrystalAdapter()
+    vals: dict[int, int] = {PARTY_COUNT: 1}
+    _mon_hp(vals, 0, 20, 40)
+    pyboy = _FakePyBoy(vals)
+    a.reset_episode(pyboy)
+    assert a.total_healing_rew == 0.0
+
+    # catch a second mon (party 1 -> 2); the catch step itself pays no heal
+    vals[PARTY_COUNT] = 2
+    _mon_hp(vals, 1, 30, 30)
+    for k, v in vals.items():
+        pyboy.memory[k] = v
+    a._update_heal(pyboy)
+    assert a.total_healing_rew == 0.0
+    assert a.party_size == 2  # refreshed
+
+    # now heal mon 0: 20/40 -> 40/40. hp_fraction rises — heal must register.
+    _mon_hp(vals, 0, 40, 40)
+    for k, v in vals.items():
+        pyboy.memory[k] = v
+    a._update_heal(pyboy)
+    assert a.total_healing_rew > 0.0
+
+
+def test_no_lump_sum_at_boot_exit():
+    """Event flags set during boot must not be paid as one giant delta on the
+    first tutorial step."""
+    from deepEmulator.cartridges.pokemon_crystal import (
+        EVENT_FLAGS_START, PARTY_COUNT, PokemonCrystalAdapter,
+    )
+
+    a = PokemonCrystalAdapter()
+    pyboy = _FakePyBoy({PARTY_COUNT: 0})
+    a.reset_episode(pyboy)
+
+    # several boot steps during which 5 intro event flags fire
+    state0 = a.read_game_state(pyboy)
+    for i in range(5):
+        pyboy.memory[EVENT_FLAGS_START + i] = 0b1
+        r = a.compute_reward(state0, a.read_game_state(pyboy), pyboy)
+        assert a.current_phase() == "boot"
+        assert r == pytest.approx(a.boot_step_reward)
+
+    # party appears -> next step the acquire bonus fires (still boot phase)
+    pyboy.memory[PARTY_COUNT] = 1
+    _mon_hp(pyboy.memory, 0, 20, 20)
+    curr = a.read_game_state(pyboy)
+    r = a.compute_reward(state0, curr, pyboy)
+    assert r == pytest.approx(a.boot_step_reward + a.boot_acquire_bonus)
+
+    # first tutorial step: the boot-era event flags must NOT arrive as a lump
+    r = a.compute_reward(curr, a.read_game_state(pyboy), pyboy)
+    assert a.current_phase() == "tutorial"
+    assert abs(r) < 1.0  # was ~+20 before the baseline refresh
+
+
+def test_stuck_penalty_is_per_step_with_no_refund():
+    from deepEmulator.cartridges.pokemon_crystal import (
+        BATTLE_MODE, MAP_GROUP, MAP_NUMBER, PARTY_COUNT, X_COORD, Y_COORD,
+        PokemonCrystalAdapter,
+    )
+
+    a = PokemonCrystalAdapter()
+    vals = {PARTY_COUNT: 1, BATTLE_MODE: 0, X_COORD: 5, Y_COORD: 7,
+            MAP_GROUP: 26, MAP_NUMBER: 1}
+    _mon_hp(vals, 0, 20, 20)
+    pyboy = _FakePyBoy(vals)
+    a.reset_episode(pyboy)
+    state = a.read_game_state(pyboy)
+
+    # park on one tile past the threshold
+    key = a._coord_key(pyboy)
+    a.seen_coords[key] = 600
+    a._total_reward = sum(a._reward_components(pyboy).values())
+
+    r1 = a.compute_reward(state, state, pyboy)
+    r2 = a.compute_reward(state, state, pyboy)
+    # every parked step pays the penalty (plus the one-time explore tick on r1)
+    assert r2 == pytest.approx(a.reward_scale * a.stuck_weight)
+    assert r1 <= 0.2  # no big positive
+
+    # stepping off the tile must NOT refund the penalty
+    pyboy.memory[X_COORD] = 6
+    off_state = a.read_game_state(pyboy)
+    r3 = a.compute_reward(state, off_state, pyboy)
+    assert r3 <= 0.2  # just the new-tile explore tick, no +|stuck| refund
+
+
+def test_phased_reward_strict_mode_reraises():
+    from deepEmulator.core.reward import PhasedReward, RewardPhase
+
+    def _boom(*_a):
+        raise RuntimeError("bad RAM address")
+
+    lenient = PhasedReward(
+        phases=[RewardPhase("x", lambda s, p: True, _boom)], strict=False
+    )
+    assert lenient.compute({}, {}, None) == 0.0
+
+    strict = PhasedReward(
+        phases=[RewardPhase("x", lambda s, p: True, _boom)], strict=True
+    )
+    with pytest.raises(RuntimeError, match="bad RAM"):
+        strict.compute({}, {}, None)
+
+    # predicate failures too
+    strict_pred = PhasedReward(
+        phases=[RewardPhase("x", _boom, lambda p, c, e: 0.0)], strict=True
+    )
+    with pytest.raises(RuntimeError):
+        strict_pred.compute({}, {}, None)
+
+
+def test_party_wipe_is_terminal():
+    from deepEmulator.cartridges.pokemon_crystal import PokemonCrystalAdapter
+
+    a = PokemonCrystalAdapter()
+    assert a.is_done({"party_size": 1, "hp_fraction": 0.0}) is True
+    assert a.is_done({"party_size": 1, "hp_fraction": 0.5}) is False
+    assert a.is_done({"party_size": 0, "hp_fraction": 0.0}) is False  # boot
+    assert PokemonCrystalAdapter(faint_terminal=False).is_done(
+        {"party_size": 1, "hp_fraction": 0.0}
+    ) is False
