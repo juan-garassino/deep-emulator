@@ -37,14 +37,14 @@ Each commit should be prefixed `[self-improve <N>]` and named after the hypothes
 
 ### 2. Recompute the SHA256 signatures
 
-The signed-eval guarantee is the only reason this mode is safe. Each row in `improvement_log.tsv` looks like:
+The signatures provide **tamper-EVIDENCE, not tamper-proofing** — the digest is unkeyed and the script ships in the repo (which is also why the review workflow hard-fails any branch that edits it). What it guarantees: a claimed score cannot disagree with the recorded `eval_episodes.tsv` rows without the digest failing to recompute. Each row in `improvement_log.tsv` looks like:
 
 ```
-ts                          baseline                       treatment                       score      sig
-2026-06-07T12:34:56Z   /baseline                      /runs/train/<ts>               42.500000  abc123...
+ts                          baseline    treatment           score      episodes_sha  sig
+2026-06-07T12:34:56+00:00   /baseline   /runs/train/<ts>    42.500000  9f3a...       abc123...
 ```
 
-The `sig` column is `SHA256(sha256_dir(baseline) || sha256_dir(treatment) || score || ts)`. To verify:
+The `sig` column is `SHA256(sha256_dir(baseline) || sha256_dir(treatment) || episodes_sha || score || ts)`, where `episodes_sha` is the combined sha of the per-bundle `eval_episodes.tsv` files (from `eval_report.json`). To verify:
 
 ```bash
 python -c "
@@ -52,14 +52,16 @@ import hashlib
 from pathlib import Path
 from deepEmulator.utils import gcs
 
-baseline = Path('/path/to/baseline')      # the read-only mount
+baseline = Path('/path/to/baseline')       # the staged comparator
 treatment = Path('/path/to/treatment')     # the bundle the row references
 score = 42.500000                          # from the row
-ts = '2026-06-07T12:34:56Z'                # from the row
+episodes_sha = '9f3a...'                   # from the row
+ts = '2026-06-07T12:34:56+00:00'           # from the row
 
 h = hashlib.sha256()
 h.update(gcs.sha256_dir(baseline).encode())
 h.update(gcs.sha256_dir(treatment).encode())
+h.update(episodes_sha.encode())
 h.update(f'{score:.6f}'.encode())
 h.update(ts.encode())
 print(h.hexdigest())
@@ -105,12 +107,13 @@ Three outcomes:
 
 | Guardrail | What it protects against | Where it lives |
 | --- | --- | --- |
-| `MAX_ITERATIONS` (default 10) | Runaway loops | `scripts/iteration_watchdog.sh` + `entrypoint.sh` |
-| `MAX_WALLCLOCK_HOURS` (default 12) | Forgotten pod burning GPU | Background timer in `iteration_watchdog.sh` |
+| `MAX_WALLCLOCK_HOURS` (default 12) — **the hard cap** | Forgotten pod burning GPU | `iteration_watchdog.sh` TERM→KILLs the claude process group |
+| `MAX_ITERATIONS` (default 10) — **advisory** | Runaway loops (honor system; the counter lives in the parent shell) | `scripts/iteration_watchdog.sh` + `program.md` |
 | Anthropic project-level spend cap | API token cost overrun | **Set in the Anthropic console — not in code.** Verify before enabling. |
-| Read-only baseline mount (`-v $baseline:/baseline:ro`) | Goodhart by editing comparator | `Makefile` `runpod_run_self_improve` target |
-| Branch isolation (`claude-self-improve-<RUN_ID>`) | Damage to `master` | `entrypoint.sh` self-improve branch |
-| SHA256-signed eval rows | Tampered metrics | `scripts/eval_signed.py` |
+| Baseline staged from GCS + `chmod a-w` | Goodhart by editing comparator | `entrypoint.sh` self-improve branch (`BASELINE_GCS_URI`) |
+| Branch isolation (`claude-self-improve-<RUN_ID>`) | Damage to `master` | `entrypoint.sh` clones the repo, branches, pushes the branch on exit |
+| SHA256-signed eval rows (incl. `episodes_sha`) | Tampered metrics (evidence, not proof) | `scripts/eval_signed.py` + `eval_report.json` |
+| Protected-files gate + commit-subject check | Weakening the harness itself | `.github/workflows/review_self_improve.yml` |
 | `appleboy/telegram-action` notify | Branch lands without a reviewer noticing | `.github/workflows/review_self_improve.yml` |
 
 These are **audit, not sandbox.** A motivated adversarial prompt can technically bypass any of them — Claude has bash inside the pod. The signatures + branch isolation + spend caps make tampering costly + visible.
@@ -120,18 +123,27 @@ These are **audit, not sandbox.** A motivated adversarial prompt can technically
 ## How to actually invoke it
 
 ```bash
-# Generate a fresh program.md if you want a different improvement target;
-# otherwise the default at repo root is fine.
+# 0. Token: a FINE-GRAINED PAT scoped to this one repo, contents:write only.
+export GITHUB_TOKEN=github_pat_...
 
+# 1. ALWAYS dry-run first: clone -> branch -> no-op commit -> push, no API
+#    spend, and confirms review_self_improve.yml fires on the branch.
+make runpod_run_self_improve SELF_IMPROVE_DRY=1
+
+# 2. The real loop (env contract: GITHUB_TOKEN + ANTHROPIC_API_KEY +
+#    BASELINE_GCS_URI are required; ROM_GCS_URI/INIT_STATE_GCS_URI stage
+#    the eval inputs).
 make runpod_run_self_improve \
-    API_KEY=$ANTHROPIC_API_KEY \
     GCS_BUCKET=gs://garassino-ml-artifacts \
-    GCS_PREFIX=deepemulator/self_improve/2026-06-07 \
+    GCS_PREFIX=deepemulator/self_improve/2026-06-11 \
+    BASELINE_GCS_URI=gs://garassino-ml-artifacts/deepemulator/baselines/coral-5k \
+    ROM_GCS_URI=gs://garassino-ml-artifacts/deepemulator/inputs/PokemonCoral.gbc \
+    INIT_STATE_GCS_URI=gs://garassino-ml-artifacts/deepemulator/inputs/coral_init.state \
     MAX_ITERATIONS=5 \
     MAX_WALLCLOCK_HOURS=4
 ```
 
-In a real RunPod pod (not local Docker), add the env vars to the pod template instead of `make`.
+In a real RunPod pod (not local Docker), add the same env vars to the pod template instead of `make`. The image carries no repo state — the entrypoint clones current `master`, so program edits take effect without an image rebuild.
 
 ---
 

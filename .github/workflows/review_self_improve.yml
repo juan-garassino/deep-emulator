@@ -25,6 +25,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,atari]"
 
+      - name: Protected files must be untouched
+        run: |
+          git fetch origin master --depth 1
+          CHANGED=$(git diff --name-only origin/master...HEAD)
+          echo "$CHANGED"
+          BAD=$(echo "$CHANGED" | grep -E '^(scripts/eval_signed\.py|program\.md|entrypoint\.sh|Dockerfile|\.github/)' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::self-improve branch modified protected files:"
+            echo "$BAD"
+            exit 1
+          fi
+
+      - name: Commit subjects must follow the iteration format
+        run: |
+          git log origin/master..HEAD --pretty=%s | while read -r subject; do
+            echo "$subject" | grep -qE '^\[self-improve [0-9]+\]' \
+              || { echo "::error::bad commit subject: $subject"; exit 1; }
+          done
+
       - name: Tests must pass on the candidate branch
         run: make test
 
@@ -40,10 +59,10 @@ jobs:
           print(f'rows: {len(rows) - 1}')
           # Full signature recomputation requires the bundle dirs to be present;
           # this stage just checks the schema. Reviewer recomputes signatures
-          # against the actual bundles offline.
+          # against the actual bundles offline (tamper-EVIDENCE, not proof).
           for r in rows[1:]:
               parts = r.split('\t')
-              assert len(parts) == 5, f'bad row: {r}'
+              assert len(parts) == 6, f'bad row (want 6 cols incl episodes_sha): {r}'
           print('schema ok')
           "
 

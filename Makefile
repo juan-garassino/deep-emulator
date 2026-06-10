@@ -325,19 +325,26 @@ runpod_smoke_lifecycle: ## lifecycle smoke against the built docker image (docke
 		&& echo "PASS: bundle landed after SIGTERM" \
 		|| (echo "FAIL: no bundle in the bucket"; exit 1)
 
-runpod_run_self_improve: ## DANGER — autonomous Claude Code loop in the container
-	@if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY required"; exit 1; fi
-	@if [ -z "$$GITHUB_TOKEN" ]; then echo "GITHUB_TOKEN required (for branch push)"; exit 1; fi
+runpod_run_self_improve: ## DANGER — autonomous Claude Code loop (SELF_IMPROVE_DRY=1 for the git-path-only check)
+	@if [ -z "$$GITHUB_TOKEN" ]; then echo "GITHUB_TOKEN required (fine-grained PAT, this repo, contents:write)"; exit 1; fi
+	@if [ "$(SELF_IMPROVE_DRY)" != "1" ] && [ -z "$$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY required (or SELF_IMPROVE_DRY=1)"; exit 1; fi
+	@if [ "$(SELF_IMPROVE_DRY)" != "1" ] && [ -z "$(BASELINE_GCS_URI)" ]; then echo "BASELINE_GCS_URI required (fixed eval comparator)"; exit 1; fi
 	@mkdir -p /tmp/deepemu
-	@docker run --rm --gpus all \
-		-e GCS_BUCKET=$(GCS_BUCKET) \
-		-e GCS_PREFIX=$(GCS_PREFIX) \
+	@docker run --rm $(GPUS) \
+		-e GCS_BUCKET=$(or $(GCS_BUCKET),file:///tmp/deepemu) \
+		-e GCS_PREFIX=$(or $(GCS_PREFIX),self-improve-local) \
 		-e MODE=self_improve \
 		-e CLAUDE_CODE_ENABLED=1 \
+		-e SELF_IMPROVE_DRY=$(or $(SELF_IMPROVE_DRY),0) \
 		-e ANTHROPIC_API_KEY=$$ANTHROPIC_API_KEY \
 		-e GITHUB_TOKEN=$$GITHUB_TOKEN \
+		-e GIT_REPO=$(or $(GIT_REPO),juan-garassino/deepEmulator) \
+		-e BASELINE_GCS_URI=$(BASELINE_GCS_URI) \
+		-e ROM_GCS_URI=$(ROM_GCS_URI) \
+		-e INIT_STATE_GCS_URI=$(INIT_STATE_GCS_URI) \
 		-e MAX_ITERATIONS=$(or $(MAX_ITERATIONS),10) \
 		-e MAX_WALLCLOCK_HOURS=$(or $(MAX_WALLCLOCK_HOURS),12) \
+		-v /tmp/deepemu:/tmp/deepemu \
 		$(IMAGE_NAME):$(TAG)
 
 runpod_logs: ## follow container logs (running container only)

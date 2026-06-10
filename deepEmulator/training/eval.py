@@ -449,7 +449,36 @@ def main(argv: list[str] | None = None) -> int:
         summaries.append(summary)
 
     out = write_report(summaries, bundles, args.out)
-    print(f"[eval] report at {out}")
+
+    # machine-readable twin of the HTML — consumed by scripts/eval_signed.py
+    # (the old approach grepped the HTML for a marker that never existed,
+    # making every self-improve score NaN). eval_episodes_sha256 binds each
+    # score to the recorded per-episode rows.
+    def _tsv_sha(b: Path) -> str | None:
+        import hashlib
+
+        tsv = Path(b) / "eval_episodes.tsv"
+        if not tsv.exists():
+            return None
+        return hashlib.sha256(tsv.read_bytes()).hexdigest()
+
+    json_path = args.out.with_suffix(".json")
+    json_path.write_text(
+        json.dumps(
+            {
+                "cartridge": args.cartridge,
+                "episodes": args.episodes,
+                "epsilon": args.epsilon,
+                "bundles": [str(b) for b in bundles],
+                "summaries": summaries,
+                "eval_episodes_sha256": {str(b): _tsv_sha(b) for b in bundles},
+                "generated": datetime.now().isoformat(timespec="seconds"),
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    print(f"[eval] report at {out} (+ {json_path.name})")
     return 0
 
 

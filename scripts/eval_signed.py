@@ -1,12 +1,17 @@
 """Wrap deepemu-eval with SHA256-signed result rows.
 
-Used by the Phase 0.5 self-improve loop so Claude Code cannot silently
-edit improvement_log.tsv to claim wins it did not earn. Each row carries
-sha256(bundle || baseline || score || timestamp). A reviewer recomputes
-the digest from the bundle directories on disk and rejects mismatches.
+Used by the Phase 0.5 self-improve loop so silent edits to
+improvement_log.tsv are DETECTABLE. Each row carries
+sha256(bundle_tree || baseline_tree || episodes_tsv_sha || score || ts);
+a reviewer recomputes the digest from the artifacts on disk and rejects
+mismatches.
 
-Audit, not sandbox: Claude has bash and could in principle bypass this.
-But doing so leaves a missing/invalid signature trail for the reviewer.
+HONEST FRAMING — tamper-EVIDENCE, not tamper-proof: the digest is unkeyed
+and this script ships in the repo, so an agent with bash could rewrite a
+row AND its signature. What it cannot do without detection is claim a
+score that disagrees with the eval_episodes.tsv files committed alongside
+(their sha is folded into the digest), and any log surgery shows up in
+the branch diff the reviewer reads anyway.
 
 Usage:
     python scripts/eval_signed.py \\
@@ -31,24 +36,26 @@ from pathlib import Path
 from deepEmulator.utils import gcs
 
 
-def _digest(baseline: Path, treatment: Path, score: float, ts: str) -> str:
+def _digest(baseline: Path, treatment: Path, episodes_sha: str, score: float, ts: str) -> str:
     h = hashlib.sha256()
     h.update(gcs.sha256_dir(baseline).encode())
     h.update(gcs.sha256_dir(treatment).encode())
+    h.update(episodes_sha.encode())
     h.update(f"{score:.6f}".encode())
     h.update(ts.encode())
     return h.hexdigest()
 
 
-def _parse_score_from_report(html_path: Path) -> float:
-    """Extract the treatment mean-reward from deepemu-eval's HTML report."""
-    text = html_path.read_text()
-    marker = 'data-mean-reward="'
-    i = text.find(marker)
-    if i < 0:
-        return float("nan")
-    j = text.find('"', i + len(marker))
-    return float(text[i + len(marker): j])
+def _parse_report_json(json_path: Path) -> tuple[float, str]:
+    """Return (treatment mean reward, combined eval_episodes sha)."""
+    payload = json.loads(json_path.read_text())
+    summaries = payload["summaries"]
+    score = float(summaries[-1]["reward_mean"])  # treatment = last bundle
+    shas = payload.get("eval_episodes_sha256", {})
+    combined = hashlib.sha256(
+        "".join(shas[k] or "" for k in sorted(shas)).encode()
+    ).hexdigest()
+    return score, combined
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,16 +89,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[eval_signed] deepemu-eval exited rc={rc}", file=sys.stderr)
         return rc
 
-    score = _parse_score_from_report(report)
-    ts = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    sig = _digest(args.baseline, args.treatment, score, ts)
+    json_path = report.with_suffix(".json")
+    if not json_path.exists():
+        print(f"[eval_signed] {json_path} missing — eval did not produce JSON", file=sys.stderr)
+        return 3
+    score, episodes_sha = _parse_report_json(json_path)
+    ts = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    sig = _digest(args.baseline, args.treatment, episodes_sha, score, ts)
 
     args.log.parent.mkdir(parents=True, exist_ok=True)
     if not args.log.exists():
-        args.log.write_text("ts\tbaseline\ttreatment\tscore\tsig\n")
+        args.log.write_text("ts\tbaseline\ttreatment\tscore\tepisodes_sha\tsig\n")
     with args.log.open("a") as out:
-        out.write(f"{ts}\t{args.baseline}\t{args.treatment}\t{score:.6f}\t{sig}\n")
-    print(json.dumps({"ts": ts, "score": score, "sig": sig}))
+        out.write(
+            f"{ts}\t{args.baseline}\t{args.treatment}\t{score:.6f}\t{episodes_sha}\t{sig}\n"
+        )
+    print(json.dumps({"ts": ts, "score": score, "episodes_sha": episodes_sha, "sig": sig}))
     return 0
 
 

@@ -198,17 +198,71 @@ run_child() {
 }
 
 # ---------------------------------------------------------------------------
-# Phase 0.5 — optional self-improvement mode (three-flag toggle)
+# Phase 0.5 — optional self-improvement mode (three-flag toggle + git wiring)
 # ---------------------------------------------------------------------------
 if [ "${MODE}" = "self_improve" ]; then
     if [ "${CLAUDE_CODE_ENABLED:-0}" != "1" ]; then
         log "MODE=self_improve but CLAUDE_CODE_ENABLED!=1 — refusing to start"
         exit 2
     fi
-    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    if [ -z "${GITHUB_TOKEN:-}" ]; then
+        log "MODE=self_improve but GITHUB_TOKEN unset (needed for clone + branch push) — refusing"
+        exit 2
+    fi
+    DRY="${SELF_IMPROVE_DRY:-0}"
+    if [ "${DRY}" != "1" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
         log "MODE=self_improve but ANTHROPIC_API_KEY unset — refusing to start"
         exit 2
     fi
+    if [ "${DRY}" != "1" ] && [ -z "${BASELINE_GCS_URI:-}" ]; then
+        log "MODE=self_improve but BASELINE_GCS_URI unset — the scoring contract needs a fixed comparator"
+        exit 2
+    fi
+
+    # --- clone-on-entry: the image is a generic runtime; the CLONE provides
+    # Makefile, tests, CLAUDE.md, program.md — and self-improve always works
+    # against current master
+    GIT_REPO="${GIT_REPO:-juan-garassino/deepEmulator}"
+    WORKSPACE="${WORKSPACE:-/workspace}"
+    REPO_DIR="${WORKSPACE}/repo"
+    BRANCH="claude-self-improve-${RUN_ID}"
+    log "self_improve: cloning ${GIT_REPO} -> ${REPO_DIR} (branch ${BRANCH})"
+    git clone --depth 50 \
+        "https://x-access-token:${GITHUB_TOKEN}@github.com/${GIT_REPO}.git" "${REPO_DIR}"
+    cd "${REPO_DIR}"
+    git config --local credential.helper ''
+    git checkout -b "${BRANCH}"
+    # run the CLONE's code, not the image's baked copy
+    uv pip install --system --no-deps -e . 2>/dev/null || pip install --no-deps -e .
+
+    # --- stage the fixed eval comparator
+    if [ -n "${BASELINE_GCS_URI:-}" ]; then
+        log "staging baseline ${BASELINE_GCS_URI} -> /baseline"
+        python -c "from deepEmulator.utils import gcs; gcs.download_dir('${BASELINE_GCS_URI}', '/baseline')"
+        chmod -R a-w /baseline 2>/dev/null || true
+    fi
+
+    push_branch() {
+        log "self_improve: pushing ${BRANCH}"
+        if git -C "${REPO_DIR}" push origin "${BRANCH}"; then
+            log "self_improve: branch pushed — review_self_improve.yml takes it from here"
+        else
+            log "self_improve: BRANCH PUSH FAILED — commits are stranded in the pod"
+            return 1
+        fi
+    }
+
+    if [ "${DRY}" = "1" ]; then
+        # SELF_IMPROVE_DRY=1: verify the whole git path (clone -> branch ->
+        # commit -> push -> review workflow fires) without any API spend
+        log "self_improve: DRY RUN — no claude invocation"
+        printf 'ts\tbaseline\ttreatment\tscore\tepisodes_sha\tsig\n' > improvement_log.tsv
+        git add improvement_log.tsv
+        git commit -m "[self-improve 0] dry-run plumbing check | score=nan | sig=dry"
+        push_branch
+        exit 0
+    fi
+
     export ANTHROPIC_API_KEY
     log "self_improve: launching watchdog + claude code"
     start_periodic_sync
@@ -228,6 +282,9 @@ if [ "${MODE}" = "self_improve" ]; then
     rc=0
     wait_child || rc=$?
     log "self_improve: claude exited rc=${rc}"
+    # push whatever was committed — even partial progress is reviewable.
+    # (SIGKILL/OOM loses this; the periodic GCS sync still carries the logs.)
+    push_branch || rc=$(( rc == 0 ? 4 : rc ))
     exit "${rc}"
 fi
 
