@@ -21,22 +21,11 @@ Multi-cartridge mix (round-robin sampling):
 from __future__ import annotations
 
 import argparse
-import importlib
 import time
 from pathlib import Path
 
+from deepEmulator.cartridges import load_all as _load_cartridges
 from deepEmulator.data.frame_corpus import FrameCollector, FrameStorage
-
-
-def _import_cartridge_modules() -> None:
-    for mod in (
-        "deepEmulator.cartridges.pokemon_red",
-        "deepEmulator.cartridges.atari.pong",
-    ):
-        try:
-            importlib.import_module(mod)
-        except Exception:
-            pass
 
 
 def _build_env(cartridge: str, rom: Path | None, init_state: Path | None):
@@ -86,7 +75,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    _import_cartridge_modules()
+    _load_cartridges()
 
     roms = list(args.rom) if args.rom else [None] * len(args.cartridges)
     if len(roms) < len(args.cartridges):

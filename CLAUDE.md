@@ -85,7 +85,9 @@ Build system is `pyproject.toml` (PEP 621). `setup.py` is legacy and will be rem
 deepEmulator/
   core/             EmulatorEnv base, CartridgeAdapter ABC, registry, vendored spaces
   platforms/        gameboy.py (PyBoy), atari.py (ale-py), sega.py (planned)
-  cartridges/       pokemon_red.py + cartridges/atari/pong.py (Mario/Kirby/Sonic planned)
+  cartridges/       pokemon_red, pokemon_crystal, pokemon_coral, generic_gb, atari/pong.
+                    __init__.py exposes load_all() — the ONLY way CLIs populate the
+                    registry (no per-CLI import lists).
   agents/           ddqn_torch (rank-3 → CNN, rank-1 → MLP — auto-dispatch)
   encoders/         vit.py (ViT-tiny), dino.py (loss + EMA teacher + trainer),
                     augmentations.py (multi-crop), frozen_wrapper.py (FrozenEncoderEnv)

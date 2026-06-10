@@ -12,23 +12,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import importlib
 from pathlib import Path
 
-
-def _import_cartridge_modules() -> None:
-    """Eagerly import known cartridge modules so the registry is populated."""
-    for mod in (
-        "deepEmulator.cartridges.pokemon_red",
-        "deepEmulator.cartridges.pokemon_crystal",
-        "deepEmulator.cartridges.pokemon_coral",
-        "deepEmulator.cartridges.generic_gb",
-        "deepEmulator.cartridges.atari.pong",
-    ):
-        try:
-            importlib.import_module(mod)
-        except Exception:
-            pass
+from deepEmulator.cartridges import load_all as _load_cartridges
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -66,7 +52,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    _import_cartridge_modules()
+    _load_cartridges()
     from deepEmulator.agents.ddqn_torch import DDQNAgent
     from deepEmulator.core import registry
     from deepEmulator.platforms.gameboy import PyBoyEnv

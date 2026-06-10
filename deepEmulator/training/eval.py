@@ -28,21 +28,11 @@ from typing import Any, Callable
 import numpy as np
 import torch
 
+from deepEmulator.cartridges import load_all as _load_cartridges
 from deepEmulator.utils.checkpoints import load_bundle
 
 
 # --- env construction ------------------------------------------------------
-def _import_cartridge_modules() -> None:
-    for mod in (
-        "deepEmulator.cartridges.pokemon_red",
-        "deepEmulator.cartridges.atari.pong",
-    ):
-        try:
-            importlib.import_module(mod)
-        except Exception:
-            pass
-
-
 def make_env(
     cartridge: str,
     rom: Path,
@@ -54,7 +44,7 @@ def make_env(
     from deepEmulator.core import registry
     from deepEmulator.platforms.gameboy import PyBoyEnv
 
-    _import_cartridge_modules()
+    _load_cartridges()
     AdapterCls = registry.get(cartridge)
     adapter = AdapterCls(init_state=init_state)
     env = PyBoyEnv(adapter, rom_path=rom, init_state=init_state, headless=headless, max_steps=max_steps)

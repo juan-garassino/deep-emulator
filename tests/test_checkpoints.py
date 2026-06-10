@@ -111,3 +111,39 @@ def test_metric_logger_writes_tsv(tmp_path):
     text = (tmp_path / "metrics.tsv").read_text().splitlines()
     assert text[0].startswith("Episode\t")
     assert len(text) == 2
+
+
+def test_load_bundle_resolves_parent_dir_via_latest_marker(tmp_path):
+    """Passing the cartridge parent dir (the notebook-02 pattern) must resolve."""
+    from deepEmulator.utils.checkpoints import load_bundle, write_bundle
+
+    parent = tmp_path / "pokemon_red"
+    sd = {"online": torch.zeros(1), "exploration_rate": 0.5, "curr_step": 7}
+    write_bundle(
+        parent / "run1",
+        agent_state=sd,
+        cartridge_title="POKEMON RED",
+        cartridge_platform="gameboy",
+        action_set=["a"],
+        obs_shape=(3, 72, 80),
+        algo="ddqn",
+    )
+    agent_state, metadata = load_bundle(parent)
+    assert agent_state["curr_step"] == 7
+    assert metadata["cartridge_title"] == "POKEMON RED"
+
+
+def test_load_bundle_clear_error_for_bogus_dir(tmp_path):
+    from deepEmulator.utils.checkpoints import load_bundle
+
+    with pytest.raises(FileNotFoundError, match="latest.txt"):
+        load_bundle(tmp_path / "does-not-exist")
+
+
+def test_versions_records_real_pyboy_version():
+    pytest.importorskip("pyboy")
+    from deepEmulator.utils.checkpoints import _versions
+
+    v = _versions()
+    assert v.get("pyboy", "unknown") != "unknown"
+    assert v["pyboy"][0].isdigit()

@@ -31,18 +31,8 @@ import numpy as np
 import torch
 
 from deepEmulator.agents.ddqn_torch import DDQNAgent
+from deepEmulator.cartridges import load_all as _load_cartridges
 from deepEmulator.utils.checkpoints import load_bundle
-
-
-def _import_cartridge_modules() -> None:
-    for mod in (
-        "deepEmulator.cartridges.pokemon_red",
-        "deepEmulator.cartridges.atari.pong",
-    ):
-        try:
-            importlib.import_module(mod)
-        except Exception:
-            pass
 
 
 def _build_inner_env(cartridge: str, rom: Path, init_state: Path | None, visible: bool):
@@ -217,7 +207,7 @@ def run_play(
     epsilon: float,
     env_factory=None,  # for tests: inject a fake env factory
 ) -> int:
-    _import_cartridge_modules()
+    _load_cartridges()
 
     agent_state, metadata = load_bundle(ckpt)
     encoder_path = None

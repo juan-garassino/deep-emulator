@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import importlib.metadata
 import json
 import platform
 import sys
@@ -24,9 +25,8 @@ import torch
 def _versions() -> dict:
     info = {"python": sys.version.split()[0], "torch": torch.__version__}
     try:
-        import pyboy  # type: ignore
-
-        info["pyboy"] = pyboy.__version__ if hasattr(pyboy, "__version__") else "unknown"
+        # pyboy 2.x has no __version__ attribute — ask package metadata
+        info["pyboy"] = importlib.metadata.version("pyboy")
     except Exception:
         pass
     try:
@@ -80,9 +80,23 @@ def write_bundle(
 
 def load_bundle(run_dir: Path | str, map_location: str = "cpu") -> tuple[dict, dict]:
     run_dir = Path(run_dir)
+    if not (run_dir / "metadata.json").exists():
+        # Caller may have passed the parent dir (e.g. checkpoints/pokemon_red);
+        # resolve through the latest.txt marker.
+        resolved = find_latest_run(run_dir)
+        if resolved is None:
+            raise FileNotFoundError(
+                f"{run_dir} contains neither metadata.json nor a resolvable latest.txt marker"
+            )
+        run_dir = resolved
     with open(run_dir / "metadata.json") as f:
         metadata = json.load(f)
-    agent_state = torch.load(run_dir / "model.pt", map_location=map_location, weights_only=False)
+    try:
+        agent_state = torch.load(run_dir / "model.pt", map_location=map_location, weights_only=True)
+    except Exception:
+        # pre-fix bundles may contain non-tensor pickles
+        print(f"[checkpoints] weights_only load failed for {run_dir} — falling back to full pickle")
+        agent_state = torch.load(run_dir / "model.pt", map_location=map_location, weights_only=False)
     return agent_state, metadata
 
 

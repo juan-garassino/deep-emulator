@@ -176,14 +176,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    # Late imports keep visualization unused-import-free in P0
-    import importlib
+    from deepEmulator.cartridges import load_all as _load_cartridges
 
-    for mod in ("deepEmulator.cartridges.pokemon_red", "deepEmulator.cartridges.atari.pong"):
-        try:
-            importlib.import_module(mod)
-        except Exception:
-            pass
+    _load_cartridges()
     from deepEmulator.core import registry
     from deepEmulator.encoders.frozen_wrapper import load_frozen_encoder
     from deepEmulator.platforms.gameboy import PyBoyEnv

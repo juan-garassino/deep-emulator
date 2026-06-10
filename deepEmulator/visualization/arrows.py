@@ -36,7 +36,8 @@ def _resolve_local_to_global(cartridge: str) -> Callable[[int, int, int], tuple[
         from deepEmulator.cartridges.pokemon_red import local_to_global
 
         return local_to_global
-    if cart == "POKEMON CRYSTAL":
+    if cart in ("POKEMON CRYSTAL", "POKEMON CORAL"):
+        # Coral is a Crystal-engine romhack — same map grid
         from deepEmulator.cartridges.pokemon_crystal import local_to_global
 
         return local_to_global
