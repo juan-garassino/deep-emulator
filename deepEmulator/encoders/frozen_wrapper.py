@@ -106,10 +106,17 @@ def load_frozen_encoder(
         return model, metadata
 
     if algo == "vjepa":
-        from deepEmulator.encoders.vit_spatiotemporal import (
-            SpatiotemporalViT,
-            SpatiotemporalViTConfig,
-        )
+        try:
+            from deepEmulator.encoders.vit_spatiotemporal import (
+                SpatiotemporalViT,
+                SpatiotemporalViTConfig,
+            )
+        except ImportError as e:
+            raise RuntimeError(
+                "this bundle records algo='vjepa', but the V-JEPA encoder is "
+                "Phase 1 and not implemented yet — retrain with DINO or wait "
+                "for encoders/vit_spatiotemporal.py to land"
+            ) from e
 
         st_kwargs = metadata.get("vit_config", {})
         valid = SpatiotemporalViTConfig.__dataclass_fields__.keys()

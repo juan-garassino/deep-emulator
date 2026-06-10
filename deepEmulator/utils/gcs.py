@@ -12,10 +12,34 @@ test run does not need google-cloud-storage installed.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
+import time
 from pathlib import Path
+from typing import Callable, TypeVar
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _retry(fn: Callable[[], _T], *, attempts: int = 3, backoff: float = 2.0) -> _T:
+    """Retry a flaky network call with exponential backoff. Re-raises the
+    final failure — losing a run's artifacts to one transient error is worse
+    than a few seconds of waiting."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception:
+            if attempt == attempts:
+                raise
+            wait = backoff ** (attempt - 1)
+            logger.warning("gcs op failed (attempt %d/%d), retrying in %.1fs",
+                           attempt, attempts, wait, exc_info=True)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
 
 
 def parse_uri(uri: str) -> tuple[str, str, str]:
@@ -50,7 +74,7 @@ def download(uri: str, dest: Path | str) -> Path:
         return dest
     client = _gcs_client()
     blob = client.bucket(bucket).blob(key)
-    blob.download_to_filename(str(dest))
+    _retry(lambda: blob.download_to_filename(str(dest)))
     return dest
 
 
@@ -64,33 +88,40 @@ def upload(local: Path | str, uri: str) -> str:
         shutil.copy2(local, dst)
         return uri
     client = _gcs_client()
-    client.bucket(bucket).blob(key).upload_from_filename(str(local))
+    blob = client.bucket(bucket).blob(key)
+    _retry(lambda: blob.upload_from_filename(str(local)))
     return uri
 
 
 def upload_dir(local: Path | str, uri: str) -> str:
-    """Recursively upload a directory tree under `uri`. Returns the URI."""
+    """Recursively upload a directory tree under `uri` (additive merge —
+    matches the gs:// per-object semantics so local smokes exercise the
+    same behavior pods see). Returns the URI."""
     local = Path(local)
     if not local.is_dir():
         raise NotADirectoryError(local)
     scheme, bucket, key = parse_uri(uri)
     if scheme == "file":
         dst = _file_path(bucket, key)
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(local, dst)
+        for path in local.rglob("*"):
+            if path.is_file():
+                out = dst / path.relative_to(local)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, out)
         return uri
     client = _gcs_client()
     b = client.bucket(bucket)
     for path in local.rglob("*"):
         if path.is_file():
             rel = path.relative_to(local)
-            b.blob(f"{key.rstrip('/')}/{rel.as_posix()}").upload_from_filename(str(path))
+            blob = b.blob(f"{key.rstrip('/')}/{rel.as_posix()}")
+            _retry(lambda _b=blob, _p=path: _b.upload_from_filename(str(_p)))
     return uri
 
 
 def download_dir(uri: str, dest: Path | str) -> Path:
-    """Recursively download a directory tree from `uri` to `dest`."""
+    """Recursively download a directory tree from `uri` to `dest` (additive
+    merge — never wipes existing local files)."""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     scheme, bucket, key = parse_uri(uri)
@@ -98,20 +129,22 @@ def download_dir(uri: str, dest: Path | str) -> Path:
         src = _file_path(bucket, key)
         if not src.is_dir():
             raise NotADirectoryError(src)
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(src, dest)
+        for path in src.rglob("*"):
+            if path.is_file():
+                out = dest / path.relative_to(src)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, out)
         return dest
     client = _gcs_client()
     b = client.bucket(bucket)
     prefix = key.rstrip("/") + "/"
-    for blob in client.list_blobs(b.name, prefix=prefix):
+    for blob in _retry(lambda: list(client.list_blobs(b.name, prefix=prefix))):
         rel = blob.name[len(prefix):]
         if not rel:
             continue
         out = dest / rel
         out.parent.mkdir(parents=True, exist_ok=True)
-        blob.download_to_filename(str(out))
+        _retry(lambda _b=blob, _o=out: _b.download_to_filename(str(_o)))
     return dest
 
 
@@ -123,8 +156,13 @@ def exists(uri: str) -> bool:
     return client.bucket(bucket).blob(key).exists()
 
 
-def latest_run_uri(prefix_uri: str) -> str | None:
-    """Read `<prefix_uri>/latest.txt` and return its contents trimmed, or None.
+def latest_run_name(prefix_uri: str) -> str | None:
+    """Read `<prefix_uri>/latest.txt` and return the run NAME it contains, or None.
+
+    The marker stores a bare run-dir name (e.g. `20260611-031500`) — callers
+    compose `<prefix_uri>/<name>` themselves. Markers written before the
+    relative-name fix contained an absolute container path; we degrade those
+    to their basename so old prefixes stay resumable.
 
     Missing markers must NOT raise — fresh runs are a normal case.
     """
@@ -133,9 +171,13 @@ def latest_run_uri(prefix_uri: str) -> str | None:
         return None
     scheme, bucket, key = parse_uri(marker_uri)
     if scheme == "file":
-        return _file_path(bucket, key).read_text().strip() or None
-    client = _gcs_client()
-    return client.bucket(bucket).blob(key).download_as_text().strip() or None
+        content = _file_path(bucket, key).read_text().strip()
+    else:
+        client = _gcs_client()
+        content = _retry(lambda: client.bucket(bucket).blob(key).download_as_text()).strip()
+    if not content:
+        return None
+    return content.rsplit("/", 1)[-1]  # absolute-path markers degrade to basename
 
 
 def sha256_dir(local: Path | str) -> str:

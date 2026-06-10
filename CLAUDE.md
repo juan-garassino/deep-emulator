@@ -111,16 +111,25 @@ encoders/           (gitignored) DINO encoder bundles + latest.txt marker
 data/frames/        (gitignored) SSL frame corpora (FrameStorage)
 data/trajectories/  (gitignored) episode CSV.gz for arrow viz
 
-Dockerfile          RunPod GPU training image (autoresearch-style; CUDA 12.8 + uv)
+Dockerfile          RunPod GPU training image (autoresearch-style; CUDA 12.8 *base* + uv,
+                    python-is-python3, non-root `runner` user)
 entrypoint.sh       three-flag MODE dispatcher: train | collect_frames | pretrain_dino |
-                    pretrain_vjepa | self_improve. Stages ROMs from GCS, rsyncs /runs back
-                    to GCS on exit, conditional wandb login.
+                    pretrain_vjepa | self_improve. Stages ROMs/encoder from GCS, runs the
+                    trainee as a CHILD (never exec — traps must survive), periodic
+                    background sync (SYNC_EVERY_SECS) + EXIT-trap final sync, materializes
+                    GCP_SA_JSON -> GOOGLE_APPLICATION_CREDENTIALS, downloads the resume
+                    bundle. Exit code 4 = run finished but FINAL SYNC FAILED.
 .dockerignore       excludes roms/, states/, checkpoints/, etc. from the image.
 program.md          Phase 0.5 autonomous-improvement prompt (default OFF, gated by
                     MODE=self_improve + CLAUDE_CODE_ENABLED=1 + ANTHROPIC_API_KEY).
 scripts/eval_signed.py        SHA256-signed wrapper around deepemu-eval.
-scripts/iteration_watchdog.sh wallclock + iter caps for self_improve.
-deepEmulator/utils/gcs.py     gs:// + file:// URI storage (download/upload_dir/latest_run_uri).
+scripts/iteration_watchdog.sh wallclock (hard, pgid-kill) + iteration (advisory) caps.
+scripts/lifecycle_smoke.sh    MANDATORY pre-pod gate: host entrypoint + SIGTERM mid-run,
+                              asserts bundle + relative marker landed (make smoke_lifecycle).
+deepEmulator/utils/gcs.py     gs:// + file:// URI storage (download/upload_dir/latest_run_name);
+                              both schemes are additive-merge; retries on per-blob ops.
+deepEmulator/utils/sync_runs.py  `python -m` artifact pusher used by the periodic loop +
+                              EXIT trap; exits non-zero if any dir fails.
 deepEmulator/training/runpod_train.py    GCS-staging wrapper around train.main (mirrors colab_train.py).
 deepEmulator/training/runpod_pretrain.py GCS-staging wrapper around pretrain_dino.main / pretrain_vjepa.main.
 .github/workflows/ci.yml                      CPU-only pytest (py3.10, container parity) +
@@ -165,13 +174,13 @@ Local inference reads `metadata.json` → instantiates matching env + adapter �
 
 ## RunPod + GCS path (Phase 0)
 
-Mirrors the autoresearch container pattern at `/Users/juan-garassino/Code/005-products/020-autoresearch`. One image, one entrypoint, env-var contract dispatches between modes. Bundles are written under `/runs/` inside the container and rsynced to `${GCS_BUCKET}/${GCS_PREFIX}/` by `entrypoint.sh` on exit (success, signal, or watchdog kill).
+Mirrors the autoresearch container pattern at `/Users/juan-garassino/Code/005-products/020-autoresearch`. One image, one entrypoint, env-var contract dispatches between modes. Bundles are written under `${RUNS_ROOT:-/runs}` inside the container and pushed to `${GCS_BUCKET}/${GCS_PREFIX}/` by a periodic background sync (every `SYNC_EVERY_SECS`, default 300 — the only protection against SIGKILL/OOM) plus an EXIT-trap final sync (normal exit + SIGTERM). The trainee is a child process — never `exec`'d, which would destroy bash and its traps. Markers live at `${PREFIX}/<mode>/latest.txt` and hold the run **name** (relative); on `RESUME=1` the entrypoint downloads that bundle before launching train.
 
 Storage URIs use a two-scheme convention via `deepEmulator/utils/gcs.py`:
 - `gs://bucket/key` — real GCS via `google-cloud-storage` (deferred import).
 - `file:///abs/path` — local filesystem, used by tests and `make runpod_run_local` smoke runs.
 
-`latest_run_uri(prefix_uri)` returns `None` when no marker is present — first-run resume is **not** an error.
+`latest_run_name(prefix_uri)` returns `None` when no marker is present — first-run resume is **not** an error. Old absolute-path markers degrade to their basename.
 
 ## Phase 0.5 — optional Claude-Code self-improvement (OFF by default)
 

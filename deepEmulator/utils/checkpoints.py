@@ -73,8 +73,10 @@ def write_bundle(
 
     if update_latest:
         # Write a "latest" marker as a small text file (works on Drive where
-        # symlinks are unreliable). The marker points at the absolute run dir.
-        (run_dir.parent / "latest.txt").write_text(str(run_dir.resolve()) + "\n")
+        # symlinks are unreliable). Stores the run-dir NAME, not an absolute
+        # path — the marker gets synced to GCS and read back inside a fresh
+        # container where the old absolute path would be meaningless.
+        (run_dir.parent / "latest.txt").write_text(run_dir.name + "\n")
     return run_dir
 
 
@@ -112,9 +114,20 @@ def find_latest_run(parent_dir: Path | str) -> Path | None:
         return None
     marker = parent / "latest.txt"
     if marker.exists():
-        candidate = Path(marker.read_text().strip())
-        if (candidate / "metadata.json").exists():
-            return candidate
+        content = marker.read_text().strip()
+        if content:
+            # relative run name (current format)
+            candidate = parent / content
+            if (candidate / "metadata.json").exists():
+                return candidate
+            # pre-fix absolute path: honor it if it still resolves, else
+            # fall back to its basename under this parent
+            abs_candidate = Path(content)
+            if (abs_candidate / "metadata.json").exists():
+                return abs_candidate
+            candidate = parent / abs_candidate.name
+            if (candidate / "metadata.json").exists():
+                return candidate
     candidates = sorted(
         [p for p in parent.iterdir() if p.is_dir() and (p / "metadata.json").exists()]
     )

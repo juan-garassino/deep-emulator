@@ -293,9 +293,9 @@ runpod_push: ## docker push to ghcr.io (requires GITHUB_TOKEN env var with write
 	@echo "image: $(REGISTRY)/$(IMAGE_NAME):$(TAG)"
 	@echo "RunPod setup: GPU pod, container image above, env GCS_BUCKET + GCS_PREFIX + MODE."
 
-runpod_run_local: ## docker run locally with GPU + a file:// GCS surrogate (smoke test)
+runpod_run_local: ## docker run locally with a file:// GCS surrogate (smoke test; GPUS="--gpus all" on a CUDA host)
 	@mkdir -p /tmp/deepemu
-	@docker run --rm --gpus all \
+	@docker run --rm $(GPUS) \
 		-e GCS_BUCKET=file:///tmp/deepemu \
 		-e GCS_PREFIX=local-smoke \
 		-e MODE=$(MODE) \
@@ -303,6 +303,26 @@ runpod_run_local: ## docker run locally with GPU + a file:// GCS surrogate (smok
 		-e STEPS=$(STEPS) \
 		-v /tmp/deepemu:/tmp/deepemu \
 		$(IMAGE_NAME):$(TAG)
+
+smoke_lifecycle: ## MANDATORY pre-pod gate — host run of entrypoint.sh + SIGTERM mid-run, asserts artifacts landed
+	@bash scripts/lifecycle_smoke.sh
+
+runpod_smoke_lifecycle: ## lifecycle smoke against the built docker image (docker kill -s TERM)
+	@mkdir -p /tmp/deepemu-lc/bucket/deepemulator/lc /tmp/deepemu-lc/runs
+	@cp $(or $(SMOKE_ROM),roms/test_rom.gb) /tmp/deepemu-lc/bucket/deepemulator/lc/rom.gb
+	@docker run -d --name deepemu-lc --rm \
+		-e GCS_BUCKET=file:///tmp/deepemu-lc/bucket \
+		-e GCS_PREFIX=deepemulator/lc \
+		-e MODE=train -e CARTRIDGE='GENERIC GB' \
+		-e ROM_GCS_URI=file:///tmp/deepemu-lc/bucket/deepemulator/lc/rom.gb \
+		-e STEPS=200000 -e SAVE_EVERY=500 -e EPISODE_STEPS=400 \
+		-e SYNC_EVERY_SECS=10 -e RUN_ID=smoke-run \
+		-v /tmp/deepemu-lc:/tmp/deepemu-lc \
+		$(IMAGE_NAME):$(TAG)
+	@sleep 60 && docker kill -s TERM deepemu-lc && sleep 20
+	@test -f /tmp/deepemu-lc/bucket/deepemulator/lc/train/smoke-run/model.pt \
+		&& echo "PASS: bundle landed after SIGTERM" \
+		|| (echo "FAIL: no bundle in the bucket"; exit 1)
 
 runpod_run_self_improve: ## DANGER — autonomous Claude Code loop in the container
 	@if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY required"; exit 1; fi
@@ -343,13 +363,17 @@ tf_output_sa_key: ## write SA key JSON to /tmp/gcp-sa-deepemu.json — upload to
 	@echo "next: RunPod UI -> Secrets -> Add Secret 'gcp-sa-deepemu' = contents of that file"
 	@echo "      then mount in pod at /secrets/gcp-sa.json (entrypoint expects GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp-sa.json)"
 
-gcs_pull_latest: ## pull the latest run bundle from GCS to ./checkpoints (BUCKET=... PREFIX=...)
+gcs_pull_latest: ## pull only the LATEST train bundle from GCS to ./checkpoints (BUCKET=... PREFIX=...)
 	@if [ -z "$(BUCKET)" ] || [ -z "$(PREFIX)" ]; then \
 		echo "usage: make gcs_pull_latest BUCKET=gs://garassino-ml-artifacts PREFIX=deepemulator/coral/run-001"; \
 		exit 1; \
 	fi
-	@gsutil -m rsync -r $(BUCKET)/$(PREFIX)/ ./checkpoints/$(PREFIX)/
-	@echo "pulled to ./checkpoints/$(PREFIX)/"
+	@$(PY) -c "from deepEmulator.utils import gcs; \
+		name = gcs.latest_run_name('$(BUCKET)/$(PREFIX)/train'); \
+		assert name, 'no train/latest.txt marker under $(BUCKET)/$(PREFIX)'; \
+		dest = './checkpoints/$(PREFIX)/' + name; \
+		gcs.download_dir('$(BUCKET)/$(PREFIX)/train/' + name, dest); \
+		print('pulled', name, '->', dest)"
 
 .PHONY: help install install_dev install_cloud install_atari install_sega install_all lock \
 	smoke test test_fast black check_code \

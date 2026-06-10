@@ -12,7 +12,10 @@ license = { text = "MIT" }
 authors = [{ name = "Juan Garassino" }]
 
 dependencies = [
-    "pyboy==2.4.0",
+    # 2.7.1 (the locally-verified version) is yanked on PyPI (Red/Blue dialog
+    # rendering bug); 2.7.0 is the closest non-yanked release and re-verified
+    # against the Coral ROM smoke.
+    "pyboy==2.7.0",
     "torch>=2.3,<2.6",
     "numpy",
     "pillow",

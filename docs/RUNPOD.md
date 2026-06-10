@@ -46,9 +46,9 @@ make tf_output_sa_key     # writes /tmp/gcp-sa-deepemu.json (gitignored)
 
 The `make tf_output_sa_key` output also prints the next manual step:
 
-> RunPod UI → Secrets → Add Secret `gcp-sa-deepemu` = contents of `/tmp/gcp-sa-deepemu.json`
+> RunPod UI → Secrets → Add Secret `gcp_sa_deepemu` = contents of `/tmp/gcp-sa-deepemu.json`
 
-After uploading, the secret is referenced by name in every pod template; the file on local disk can be deleted.
+**Underscores, not hyphens** — RunPod injects secrets as env vars (`RUNPOD_SECRET_<name>`), and hyphens make invalid shell identifiers. There is no file mount: the pod template sets `GCP_SA_JSON={{ RUNPOD_SECRET_gcp_sa_deepemu }}` and `entrypoint.sh` materializes it to `/secrets/gcp-sa.json` + exports `GOOGLE_APPLICATION_CREDENTIALS` itself. After uploading, the local key file can be deleted.
 
 ### 3. Build + push the container
 
@@ -57,8 +57,14 @@ After uploading, the secret is referenced by name in every pod template; the fil
 export GITHUB_TOKEN=ghp_...
 
 make runpod_build         # ~5 min first time, faster on rebuilds
+make smoke_lifecycle      # MANDATORY pre-pod gate: host entrypoint + SIGTERM
+make runpod_smoke_lifecycle  # same gate against the built image (docker kill -s TERM)
 make runpod_push          # logs in to ghcr.io, pushes ghcr.io/juan-garassino/deepemulator:latest
 ```
+
+The lifecycle smokes assert that a SIGTERM'd run still lands its bundle and a
+**relative** `train/latest.txt` marker in the (file://) bucket — the failure
+classes that silently lose pod money.
 
 ### 4. Upload ROM + init.state to GCS
 
@@ -90,7 +96,6 @@ Create a pod in the RunPod UI (or `runpodctl create pod ...`):
 
 - **Container image:** `ghcr.io/juan-garassino/deepemulator:latest`
 - **GPU:** A4000 (cheap, ~$0.20/hr) for smoke tests; A100 for real training
-- **Pod secret:** `gcp-sa-deepemu` mounted at `/secrets/gcp-sa.json`
 - **Toggle "Stop pod when container exits"** — critical; otherwise the pod keeps billing after training finishes
 
 Env vars:
@@ -102,9 +107,11 @@ MODE=train
 CARTRIDGE=POKEMON CORAL
 ROM_GCS_URI=gs://garassino-ml-artifacts/deepemulator/inputs/PokemonCoral.gbc
 INIT_STATE_GCS_URI=gs://garassino-ml-artifacts/deepemulator/inputs/coral_init.state
+ENCODER_GCS_URI=gs://.../encoders/dino/<run>      # optional — frozen-encoder training
 STEPS=100000
 SAVE_EVERY=10000
-GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp-sa.json
+SYNC_EVERY_SECS=300                                 # periodic background sync interval
+GCP_SA_JSON={{ RUNPOD_SECRET_gcp_sa_deepemu }}      # entrypoint materializes the key
 WANDB_API_KEY=...                                   # optional
 ```
 
@@ -114,13 +121,19 @@ WANDB_API_KEY=...                                   # optional
 
 ## After the run
 
-The container exits cleanly when `STEPS` is reached. The `trap sync_runs_out EXIT INT TERM` in `entrypoint.sh` rsyncs `/runs/` → `gs://garassino-ml-artifacts/deepemulator/coral/run-001/`. If you toggled "Stop pod when container exits", the pod auto-stops and billing ends.
+The container exits cleanly when `STEPS` is reached. Artifacts reach GCS three ways, in order of resilience:
+
+1. **Periodic background sync** every `SYNC_EVERY_SECS` (default 300s) — the only protection against SIGKILL/OOM.
+2. **EXIT trap final sync** — covers normal exit and SIGTERM (pod stop). The trainee runs as a *child* of bash (never `exec`, which would destroy the traps).
+3. Exit code 4 means "training finished but the FINAL SYNC FAILED" — check the pod logs before deleting it.
+
+Marker layout: `${PREFIX}/<mode>/latest.txt` holds the latest run's **name** (relative). On `RESUME=1`, the entrypoint reads the marker, downloads the bundle into `${RUNS_ROOT}/train/<name>`, and training continues from its recorded `curr_step`.
 
 Pull the bundle locally:
 
 ```bash
 make gcs_pull_latest BUCKET=gs://garassino-ml-artifacts PREFIX=deepemulator/coral/run-001
-# Lands at ./checkpoints/deepemulator/coral/run-001/
+# Downloads only the latest train bundle to ./checkpoints/deepemulator/coral/run-001/<run>/
 ```
 
 Replay it locally with the visible PyBoy window:
@@ -162,12 +175,14 @@ GCS storage at €0.018/GB/month in `europe-west1`. A 1 GB bundle stored for a m
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `Permission denied` writing to GCS | SA key not mounted | Verify `/secrets/gcp-sa.json` exists in pod; `gsutil` needs `GOOGLE_APPLICATION_CREDENTIALS` set |
-| `entrypoint.sh: no prior run found, starting fresh` on what should be a resume | `latest.txt` missing from prefix | Expected on first run for that prefix; not an error |
+| `Permission denied` writing to GCS | `GCP_SA_JSON` not in the pod env | Template must set `GCP_SA_JSON={{ RUNPOD_SECRET_gcp_sa_deepemu }}`; the entrypoint logs "GCP credentials materialized" on success |
+| `403` on `list_blobs` / corpus staging | Missing bucket-level list permission | `make tf_apply` grants `roles/storage.legacyBucketReader` (conditioned roles can't grant list); re-apply if the module predates this |
+| `entrypoint.sh: no prior run found, starting fresh` on what should be a resume | `train/latest.txt` missing from prefix | Expected on first run for that prefix; not an error |
+| Container exits with code 4 | Training finished but the final sync failed | Artifacts may be stranded in the pod — check logs / restart before deleting |
 | `wandb.init` blocks forever | `WANDB_MODE` not set and no API key | `WandbLogger` should skip; if not, set `WANDB_MODE=disabled` explicitly |
-| `RuntimeError: CUDA driver mismatch` | Image's torch wheel vs pod's CUDA | Use a pod with CUDA 12.x; the image is built against `nvidia/cuda:12.8.0-devel` |
+| `RuntimeError: CUDA driver mismatch` | Image's torch wheel vs pod's CUDA | Use a pod with CUDA 12.x; the image base is `nvidia/cuda:12.8.0-base` (torch wheels carry the runtime) |
 | Pod keeps billing after training | "Stop pod when container exits" not toggled | Stop manually in RunPod UI; toggle for next run |
-| `gsutil rsync` fails with `403` on writes | IAM condition on the SA scopes to `deepemulator/*` only | Check `GCS_PREFIX` starts with `deepemulator/` |
+| Writes fail `403` under a different prefix | IAM condition scopes object access to `deepemulator/*` | Check `GCS_PREFIX` starts with `deepemulator/` |
 
 ---
 

@@ -165,7 +165,8 @@ def test_pretrain_cli_writes_bundle(tmp_path, monkeypatch):
     md = json.loads((run / "metadata.json").read_text())
     assert md["algo"] == "dino"
     assert md["step_count"] >= 30
-    assert (runs_root / "dino" / "latest.txt").read_text().strip() == str(run.resolve())
+    # marker stores the run NAME (relative) — survives the GCS round-trip
+    assert (runs_root / "dino" / "latest.txt").read_text().strip() == run.name
 
 
 def test_colab_pretrain_module_imports():

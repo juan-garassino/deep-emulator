@@ -120,7 +120,13 @@ def main(argv: list[str] | None = None) -> int:
 
     resume_from: Path | None = None
     if args.resume:
-        resume_from = find_latest_run(cartridge_root)
+        # an explicit --run-dir that already holds a bundle (e.g. one the
+        # RunPod entrypoint just downloaded from GCS) wins over the
+        # runs-root marker scan
+        if args.run_dir is not None and (args.run_dir / "metadata.json").exists():
+            resume_from = args.run_dir
+        else:
+            resume_from = find_latest_run(cartridge_root)
         if resume_from is None:
             print(f"[deepemu-train] --resume requested but no prior run under {cartridge_root}")
 

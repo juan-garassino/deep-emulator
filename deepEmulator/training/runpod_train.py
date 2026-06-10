@@ -64,12 +64,20 @@ def run_in_runpod(
     init_local = _stage(init_state_uri, data_dir)
     enc_local = _stage(encoder_uri, data_dir / "encoders") if encoder_uri else None
 
+    # Resume: the marker at ${PREFIX}/train/latest.txt holds the run NAME.
+    # Download that bundle locally and hand it to train.main via --run-dir —
+    # the marker alone is useless inside a fresh container.
     prefix_uri = f"{gcs_bucket.rstrip('/')}/{gcs_prefix.strip('/')}"
-    resume_uri = gcs.latest_run_uri(prefix_uri) if resume else None
-    if resume_uri:
-        print(f"[runpod_train] resume marker -> {resume_uri}")
-    else:
-        print(f"[runpod_train] no resume marker at {prefix_uri}/latest.txt — fresh run")
+    train_prefix = f"{prefix_uri}/train"
+    resume_dir: Path | None = None
+    if resume:
+        run_name = gcs.latest_run_name(train_prefix)
+        if run_name and gcs.exists(f"{train_prefix}/{run_name}/metadata.json"):
+            resume_dir = runs_root / "train" / run_name
+            print(f"[runpod_train] resuming {run_name}: downloading bundle -> {resume_dir}")
+            gcs.download_dir(f"{train_prefix}/{run_name}", resume_dir)
+        else:
+            print(f"[runpod_train] no resumable run at {train_prefix}/latest.txt — fresh run")
 
     argv = [
         "--cartridge", cartridge,
@@ -85,7 +93,9 @@ def run_in_runpod(
         argv += ["--init-state", init_local]
     if enc_local:
         argv += ["--encoder", enc_local]
-    if resume:
+    if resume_dir is not None:
+        argv += ["--run-dir", str(resume_dir), "--resume"]
+    elif resume:
         argv += ["--resume"]
 
     print(f"[runpod_train] argv: {argv}")

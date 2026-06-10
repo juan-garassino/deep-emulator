@@ -69,7 +69,8 @@ def test_write_bundle_updates_latest_marker(tmp_path):
     r1 = write_bundle(parent / "20260101_000000", **common)
     r2 = write_bundle(parent / "20260102_000000", **common)
     assert (parent / "latest.txt").exists()
-    assert (parent / "latest.txt").read_text().strip() == str(r2.resolve())
+    # marker stores the run NAME (relative) — absolute paths broke GCS resume
+    assert (parent / "latest.txt").read_text().strip() == r2.name
     assert find_latest_run(parent) == r2
 
 
@@ -147,3 +148,28 @@ def test_versions_records_real_pyboy_version():
     v = _versions()
     assert v.get("pyboy", "unknown") != "unknown"
     assert v["pyboy"][0].isdigit()
+
+
+def test_find_latest_run_honors_old_absolute_marker(tmp_path):
+    """Markers written before the relative-name fix held absolute paths —
+    they must still resolve (directly, or by basename under the parent)."""
+    from deepEmulator.utils.checkpoints import find_latest_run, write_bundle
+
+    parent = tmp_path / "pokemon_red"
+    sd = {"online": torch.zeros(1)}
+    run = write_bundle(
+        parent / "run-9",
+        agent_state=sd,
+        cartridge_title="X",
+        cartridge_platform="gameboy",
+        action_set=["a"],
+        obs_shape=(1, 1, 1),
+        algo="ddqn",
+        update_latest=False,
+    )
+    # absolute path that resolves
+    (parent / "latest.txt").write_text(str(run.resolve()) + "\n")
+    assert find_latest_run(parent) == run.resolve()
+    # absolute container path that does NOT resolve -> basename fallback
+    (parent / "latest.txt").write_text("/runs/train/run-9\n")
+    assert find_latest_run(parent) == parent / "run-9"

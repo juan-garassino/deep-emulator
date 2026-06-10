@@ -59,8 +59,9 @@ def _write_bundle(run_dir: Path, trainer: DINOTrainer, hyper: dict) -> None:
     }
     with open(run_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2, default=str)
-    # latest.txt sibling of the run dir
-    (run_dir.parent / "latest.txt").write_text(str(run_dir.resolve()) + "\n")
+    # latest.txt sibling of the run dir — stores the run NAME (relative),
+    # so the marker stays meaningful after a GCS round-trip
+    (run_dir.parent / "latest.txt").write_text(run_dir.name + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -44,17 +44,25 @@ def test_upload_dir_then_download_dir_roundtrip(tmp_path):
     assert (pulled / "trajectories" / "episode_0.csv.gz").exists()
 
 
-def test_latest_run_uri_returns_none_when_missing(tmp_path):
+def test_latest_run_name_returns_none_when_missing(tmp_path):
     prefix = f"file://{tmp_path}/never-created"
-    assert gcs.latest_run_uri(prefix) is None
+    assert gcs.latest_run_name(prefix) is None
 
 
-def test_latest_run_uri_reads_marker(tmp_path):
+def test_latest_run_name_reads_marker(tmp_path):
     prefix_dir = tmp_path / "runs" / "coral"
     prefix_dir.mkdir(parents=True)
-    (prefix_dir / "latest.txt").write_text("file:///tmp/runs/coral/run-007\n")
+    (prefix_dir / "latest.txt").write_text("run-007\n")
     prefix_uri = f"file://{prefix_dir}"
-    assert gcs.latest_run_uri(prefix_uri) == "file:///tmp/runs/coral/run-007"
+    assert gcs.latest_run_name(prefix_uri) == "run-007"
+
+
+def test_latest_run_name_degrades_old_absolute_markers(tmp_path):
+    """Pre-fix markers stored absolute container paths — degrade to basename."""
+    prefix_dir = tmp_path / "runs" / "coral"
+    prefix_dir.mkdir(parents=True)
+    (prefix_dir / "latest.txt").write_text("/runs/train/20260607-101500\n")
+    assert gcs.latest_run_name(f"file://{prefix_dir}") == "20260607-101500"
 
 
 def test_upload_single_file(tmp_path):
