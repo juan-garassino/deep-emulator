@@ -40,6 +40,9 @@ ROMs are user-supplied (legal dump of a cart you own). Drop them in `roms/`. PyB
 
 ```bash
 # Train DDQN on pixels (Phase I baseline)
+# Epsilon linearly anneals 1.0 -> 0.05 over the first 10% of --steps
+# (--eps-anneal-frac); gamma defaults to 0.99 (--gamma); pixel obs are /255-
+# normalized automatically.
 deepemu-train --cartridge "POKEMON RED" --rom roms/PokemonRed.gb \
               --init-state states/init.state --steps 100000 --headless
 

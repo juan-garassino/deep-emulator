@@ -28,6 +28,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run-dir", type=Path, default=None)
     p.add_argument("--save-every", type=int, default=10_000)
     p.add_argument("--algo", default="ddqn", choices=["ddqn"])
+    p.add_argument("--gamma", type=float, default=0.99)
+    p.add_argument(
+        "--eps-anneal-frac",
+        type=float,
+        default=0.10,
+        help="Linearly anneal epsilon 1.0 -> min over this fraction of --steps.",
+    )
     p.add_argument(
         "--resume",
         action="store_true",
@@ -53,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
     _load_cartridges()
-    from deepEmulator.agents.ddqn_torch import DDQNAgent
+    from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
     from deepEmulator.core import registry
     from deepEmulator.platforms.gameboy import PyBoyEnv
     from deepEmulator.utils.checkpoints import (
@@ -103,9 +110,15 @@ def main(argv: list[str] | None = None) -> int:
             f"(latent_dim={encoder.cfg.out_dim}, obs_shape={env.observation_space.shape})"
         )
 
+    obs_shape = env.observation_space.shape
     agent = DDQNAgent(
-        obs_shape=env.observation_space.shape,
+        obs_shape=obs_shape,
         n_actions=env.action_space.n,
+        config=DDQNConfig(
+            gamma=args.gamma,
+            exploration_anneal_steps=max(1, int(args.eps_anneal_frac * args.steps)),
+            normalize_obs=len(obs_shape) == 3,  # pixels only; latents pass through
+        ),
     )
 
     if resume_from is not None:

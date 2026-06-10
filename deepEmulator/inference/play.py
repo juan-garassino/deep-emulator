@@ -231,7 +231,8 @@ def run_play(
         device="cpu",
     )
     agent.load_state_dict(agent_state)
-    agent.exploration_rate = epsilon
+    # fixed inference epsilon — no decay, no 0.05 floor clamp (act(explore=False))
+    agent.eval_epsilon = epsilon
 
     # Optional overlays
     arrows_overlay = None
@@ -265,7 +266,7 @@ def run_play(
                 # Human takeover check (cheap; just stat the file)
                 agent_on = _read_agent_enabled(toggle)
                 if agent_on:
-                    action = agent.act(obs)
+                    action = agent.act(obs, explore=False)
                 else:
                     # idle while paused. On Game Boy, action 0 is "down" — only
                     # ALE has a true NOOP at index 0.

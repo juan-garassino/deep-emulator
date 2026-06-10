@@ -19,16 +19,27 @@ import torch.nn as nn
 @dataclass
 class DDQNConfig:
     exploration_rate: float = 1.0
+    # multiplicative decay is the fallback when exploration_anneal_steps is None.
+    # NOTE: 0.99999975 needs ~12M act() calls to reach the floor — for budgeted
+    # runs always set exploration_anneal_steps (train.py does).
     exploration_rate_decay: float = 0.99999975
     exploration_rate_min: float = 0.05
+    # when set: linear anneal 1.0 -> min over this many steps, as a pure
+    # function of curr_step (resume-correct, batch-stepping-correct)
+    exploration_anneal_steps: int | None = None
     deque_size: int = 100_000
     batch_size: int = 32
-    gamma: float = 0.9
+    gamma: float = 0.99
     learning_rate: float = 0.00025
-    learning_rate_decay: float = 0.99999985
     burnin: int = 1_000
     learn_every: int = 3
     sync_every: int = 1_000
+    grad_clip_norm: float = 10.0
+    # divide pixel observations by 255 in act()/sampling. Off by default for
+    # backward compat with pre-fix bundles; train.py turns it on for new
+    # pixel runs and records it in bundle metadata. Never applies to rank-1
+    # latent observations.
+    normalize_obs: bool = False
 
 
 # --- network ----------------------------------------------------------------
@@ -109,30 +120,48 @@ class DDQNAgent:
         self.optimizer = torch.optim.Adam(
             self.net.online.parameters(), lr=self.config.learning_rate
         )
-        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            self.optimizer, gamma=self.config.learning_rate_decay
-        )
         self.loss_fn = nn.SmoothL1Loss()
         self.memory: deque = deque(maxlen=self.config.deque_size)
 
         self.exploration_rate = self.config.exploration_rate
+        self.eval_epsilon = 0.0  # used by act(explore=False); play/eval set this
         self.curr_step = 0
 
+    # --- preprocessing -----------------------------------------------------
+    def _prep(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.float()
+        if self.config.normalize_obs and len(self.obs_shape) == 3:
+            x = x / 255.0
+        return x
+
     # --- policy ----------------------------------------------------------
-    def act(self, state: np.ndarray) -> int:
+    def _greedy(self, state: np.ndarray) -> int:
+        with torch.no_grad():
+            s = torch.from_numpy(np.asarray(state)).unsqueeze(0).to(self.device)
+            q = self.net(self._prep(s), mode="online")
+            return int(torch.argmax(q, dim=1).item())
+
+    def act(self, state: np.ndarray, explore: bool = True) -> int:
+        if not explore:
+            # eval/play mode: fixed eval_epsilon, no decay, no step counting
+            if self.eval_epsilon > 0.0 and random.random() < self.eval_epsilon:
+                return random.randint(0, self.n_actions - 1)
+            return self._greedy(state)
+
         if random.random() < self.exploration_rate:
             action = random.randint(0, self.n_actions - 1)
         else:
-            with torch.no_grad():
-                s = torch.from_numpy(np.asarray(state)).float().unsqueeze(0).to(self.device)
-                q = self.net(s, mode="online")
-                action = int(torch.argmax(q, dim=1).item())
+            action = self._greedy(state)
 
-        self.exploration_rate = max(
-            self.config.exploration_rate_min,
-            self.exploration_rate * self.config.exploration_rate_decay,
-        )
         self.curr_step += 1
+        if self.config.exploration_anneal_steps is not None:
+            frac = min(1.0, self.curr_step / max(1, self.config.exploration_anneal_steps))
+            self.exploration_rate = 1.0 - (1.0 - self.config.exploration_rate_min) * frac
+        else:
+            self.exploration_rate = max(
+                self.config.exploration_rate_min,
+                self.exploration_rate * self.config.exploration_rate_decay,
+            )
         return action
 
     # --- replay buffer ---------------------------------------------------
@@ -156,14 +185,12 @@ class DDQNAgent:
     def _recall(self):
         batch = random.sample(self.memory, self.config.batch_size)
         s, ns, a, r, d = map(torch.stack, zip(*batch))
-        # Float conversion happens here on the sampled batch, not in cache.
-        # Preserve the [0, 255] input range that `act()` also uses — keeps
-        # training and inference distributions aligned.
-        s = s.float()
-        ns = ns.float()
+        # Float conversion (and optional /255) happens here on the sampled
+        # batch, not in cache — the buffer stays uint8 (F9.7). _prep applies
+        # the same transform act() uses, keeping train/inference aligned.
         return (
-            s.to(self.device),
-            ns.to(self.device),
+            self._prep(s.to(self.device)),
+            self._prep(ns.to(self.device)),
             a.squeeze(1).to(self.device),
             r.squeeze(1).to(self.device),
             d.squeeze(1).to(self.device),
@@ -174,11 +201,12 @@ class DDQNAgent:
         if self.curr_step % self.config.sync_every == 0:
             self.net.target.load_state_dict(self.net.online.state_dict())
 
-        if self.curr_step < self.config.burnin:
+        # gate on buffer fill, not curr_step: resume restores curr_step but
+        # the buffer starts empty — learning from 32 correlated samples
+        # right after resume is a Q-collapse recipe
+        if len(self.memory) < max(self.config.burnin, self.config.batch_size):
             return None, None
         if self.curr_step % self.config.learn_every != 0:
-            return None, None
-        if len(self.memory) < self.config.batch_size:
             return None, None
 
         s, ns, a, r, d = self._recall()
@@ -194,8 +222,8 @@ class DDQNAgent:
         loss = self.loss_fn(q_est, q_tgt)
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.net.online.parameters(), self.config.grad_clip_norm)
         self.optimizer.step()
-        self.scheduler.step()
         return float(q_est.mean().item()), float(loss.item())
 
     # --- persistence -----------------------------------------------------

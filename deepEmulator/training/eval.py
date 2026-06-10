@@ -85,7 +85,8 @@ def evaluate_bundle(
         device="cpu",
     )
     agent.load_state_dict(agent_state)
-    agent.exploration_rate = epsilon  # near-greedy
+    # fixed eval epsilon — no decay, no curr_step mutation (act(explore=False))
+    agent.eval_epsilon = epsilon
 
     episodes: list[dict] = []
     captured_frames: list[np.ndarray] = []
@@ -109,7 +110,7 @@ def evaluate_bundle(
             length = 0
             episode_frames: list[np.ndarray] = []
             while True:
-                action = agent.act(obs)
+                action = agent.act(obs, explore=False)
                 obs, r, term, trunc, _ = env.step(action)
                 total_reward += r
                 length += 1
