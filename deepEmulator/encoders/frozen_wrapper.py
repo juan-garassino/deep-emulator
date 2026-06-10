@@ -18,7 +18,7 @@ import torch
 from deepEmulator.core.cartridge import CartridgeAdapter
 from deepEmulator.core.env import EmulatorEnv
 from deepEmulator.core.spaces import Box, Discrete
-from deepEmulator.data.frame_corpus import normalize_to_96x96
+from deepEmulator.data.frame_corpus import OBS_PREPROCESSING, normalize_to_96x96
 from deepEmulator.encoders.vit import ViTConfig, ViTTiny
 
 
@@ -94,6 +94,19 @@ def load_frozen_encoder(
         metadata = json.load(f)
 
     algo = metadata.get("algo", "dino")
+
+    # preprocessing contract: FrozenEncoderEnv feeds the env OBSERVATION
+    # pipeline; an encoder pretrained on a different pipeline (e.g. a
+    # render()-frame corpus) would silently see a shifted distribution.
+    # Bundles written before the field existed (None) load with no check.
+    recorded = metadata.get("preprocessing")
+    if recorded is not None and recorded != OBS_PREPROCESSING:
+        raise ValueError(
+            f"encoder bundle {encoder_dir} was pretrained on preprocessing="
+            f"{recorded!r}, but FrozenEncoderEnv feeds {OBS_PREPROCESSING!r} — "
+            "recollect the corpus with the default (obs-path) extractor"
+        )
+
     sd = torch.load(encoder_dir / "encoder_only.pt", map_location=map_location, weights_only=False)
 
     if algo == "dino":

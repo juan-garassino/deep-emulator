@@ -41,6 +41,15 @@ def test_vit_attention_maps_extractable():
 
     model = ViTTiny(ViTConfig(image_size=96, patch_size=4, embed_dim=192, depth=4, num_heads=3))
     x = torch.zeros(2, 1, 96, 96)
+
+    # training mode must NOT stash attention — at DINO batch sizes the stash
+    # held ~6 GB of dead GPU memory across student + teacher
+    model.train()
+    _ = model(x)
+    assert all(blk.attn.last_attn is None for blk in model.blocks)
+
+    # eval mode (all rollout/visualization paths) stashes as before
+    model.eval()
     _ = model(x)
     maps = model.get_attention_maps()
     assert len(maps) == 4

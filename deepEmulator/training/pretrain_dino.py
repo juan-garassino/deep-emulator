@@ -44,7 +44,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _write_bundle(run_dir: Path, trainer: DINOTrainer, hyper: dict) -> None:
+def _write_bundle(
+    run_dir: Path, trainer: DINOTrainer, hyper: dict, preprocessing: str | None = None
+) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     torch.save(trainer.state_dict(), run_dir / "encoder.pt")
     torch.save(trainer.encoder_only_state_dict(), run_dir / "encoder_only.pt")
@@ -55,6 +57,10 @@ def _write_bundle(run_dir: Path, trainer: DINOTrainer, hyper: dict) -> None:
         "crop_config": trainer.crop_cfg.__dict__,
         "hyper": hyper,
         "step_count": trainer.step_count,
+        # which frame pipeline the encoder was trained on — validated at
+        # load_frozen_encoder so a render-path corpus can't silently feed an
+        # obs-path RL run
+        "preprocessing": preprocessing,
         "versions": _versions(),
     }
     with open(run_dir / "metadata.json", "w") as f:
@@ -83,11 +89,12 @@ def main(argv: list[str] | None = None) -> int:
             args.run_dir = dino_root / stamp
     args.run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build trainer
+    # Build trainer (total_steps enables warmup + cosine LR/WD/momentum)
     trainer = DINOTrainer(
         vit_cfg=ViTConfig(),
         dino_cfg=DINOConfig(out_dim=args.out_dim, learning_rate=args.learning_rate),
         crop_cfg=MultiCropConfig(n_local=args.n_local_crops),
+        total_steps=args.steps,
     )
     print(f"[pretrain-dino] device={trainer.device} run_dir={args.run_dir}")
     print(f"[pretrain-dino] ViT params: {trainer.student.num_parameters():,}")
@@ -135,12 +142,12 @@ def main(argv: list[str] | None = None) -> int:
                     wb.log({"loss": mean, "time": time.time() - t0}, step=trainer.step_count)
 
                 if trainer.step_count > 0 and trainer.step_count % args.save_every == 0:
-                    _write_bundle(args.run_dir, trainer, hyper)
+                    _write_bundle(args.run_dir, trainer, hyper, preprocessing=storage.preprocessing)
 
                 if trainer.step_count >= args.steps:
                     break
     finally:
-        _write_bundle(args.run_dir, trainer, hyper)
+        _write_bundle(args.run_dir, trainer, hyper, preprocessing=storage.preprocessing)
         wb.finish()
     print(f"[pretrain-dino] done. bundle at {args.run_dir}")
     return 0

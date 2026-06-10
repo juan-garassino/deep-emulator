@@ -11,6 +11,7 @@ Reference: `facebookresearch/dino` — `main_dino.py` + `dino_loss.py`.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -44,9 +45,13 @@ class DINOHead(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, bottleneck_dim),
         )
-        self.last_linear = nn.utils.weight_norm(nn.Linear(bottleneck_dim, out_dim, bias=False))
-        self.last_linear.weight_g.data.fill_(1.0)
-        self.last_linear.weight_g.requires_grad = False
+        # parametrizations.weight_norm (the non-deprecated API). original0 is
+        # the magnitude g — fixed at 1 per DINO's norm_last_layer=True.
+        self.last_linear = nn.utils.parametrizations.weight_norm(
+            nn.Linear(bottleneck_dim, out_dim, bias=False)
+        )
+        self.last_linear.parametrizations.weight.original0.data.fill_(1.0)
+        self.last_linear.parametrizations.weight.original0.requires_grad = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.mlp(x)
@@ -127,6 +132,14 @@ class DINOConfig:
     teacher_ema_momentum: float = 0.996
     learning_rate: float = 5e-4
     weight_decay: float = 0.04
+    # reference-DINO training schedules — active only when DINOTrainer gets
+    # total_steps (constants otherwise, preserving library-use behavior):
+    warmup_frac: float = 0.1          # linear LR warmup over this fraction
+    final_lr_frac: float = 0.01       # cosine LR floor as a fraction of base
+    weight_decay_end: float = 0.4     # cosine WD ramp 0.04 -> 0.4
+    teacher_momentum_end: float = 1.0  # cosine EMA momentum 0.996 -> 1.0
+    grad_clip: float = 3.0            # clip_grad_norm_ on student params
+    freeze_last_layer_frac: float = 0.02  # zero last-layer grads early on
 
 
 class DINOTrainer:
@@ -145,11 +158,14 @@ class DINOTrainer:
         dino_cfg: DINOConfig | None = None,
         crop_cfg: MultiCropConfig | None = None,
         device: str | None = None,
+        total_steps: int | None = None,
     ):
         self.vit_cfg = vit_cfg or ViTConfig()
         self.dino_cfg = dino_cfg or DINOConfig()
         self.crop_cfg = crop_cfg or MultiCropConfig()
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # enables the warmup/cosine LR-WD-momentum schedules; None = constants
+        self.total_steps = total_steps
 
         # Student trunk + head
         self.student = ViTTiny(self.vit_cfg).to(self.device)
@@ -185,12 +201,56 @@ class DINOTrainer:
             center_momentum=self.dino_cfg.center_momentum,
         ).to(self.device)
 
-        params = list(self.student.parameters()) + list(self.student_head.parameters())
+        # Two param groups: weight decay never applies to biases, norms, or
+        # the cls token (reference DINO get_params_groups)
+        decay, no_decay = [], []
+        for module in (self.student, self.student_head):
+            for name, p in module.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if p.ndim <= 1 or name.endswith("cls_token"):
+                    no_decay.append(p)
+                else:
+                    decay.append(p)
+        self._trainable_params = decay + no_decay
         self.optimizer = torch.optim.AdamW(
-            params, lr=self.dino_cfg.learning_rate, weight_decay=self.dino_cfg.weight_decay
+            [
+                {"params": decay, "weight_decay": self.dino_cfg.weight_decay},
+                {"params": no_decay, "weight_decay": 0.0},
+            ],
+            lr=self.dino_cfg.learning_rate,
         )
 
         self.step_count = 0
+
+    # --- schedules (reference DINO: warmup->cosine LR, cosine WD + EMA m) ----
+    def _progress(self) -> float:
+        return min(1.0, self.step_count / max(1, self.total_steps or 1))
+
+    def _current_lr(self) -> float:
+        base = self.dino_cfg.learning_rate
+        if self.total_steps is None:
+            return base
+        warmup = max(1, int(self.dino_cfg.warmup_frac * self.total_steps))
+        if self.step_count < warmup:
+            return base * (self.step_count + 1) / warmup
+        t = (self.step_count - warmup) / max(1, self.total_steps - warmup)
+        floor = base * self.dino_cfg.final_lr_frac
+        return floor + 0.5 * (base - floor) * (1 + math.cos(math.pi * min(1.0, t)))
+
+    def _current_wd(self) -> float:
+        if self.total_steps is None:
+            return self.dino_cfg.weight_decay
+        t = self._progress()
+        start, end = self.dino_cfg.weight_decay, self.dino_cfg.weight_decay_end
+        return end - 0.5 * (end - start) * (1 + math.cos(math.pi * t))
+
+    def _current_teacher_momentum(self) -> float:
+        if self.total_steps is None:
+            return self.dino_cfg.teacher_ema_momentum
+        t = self._progress()
+        start, end = self.dino_cfg.teacher_ema_momentum, self.dino_cfg.teacher_momentum_end
+        return end - 0.5 * (end - start) * (1 + math.cos(math.pi * t))
 
     def step(self, batch: torch.Tensor | "np.ndarray") -> float:  # type: ignore[name-defined]
         import numpy as np
@@ -198,6 +258,14 @@ class DINOTrainer:
         if isinstance(batch, np.ndarray):
             batch = torch.from_numpy(batch)
         batch = batch.to(self.device)
+
+        # apply schedules before the gradient step
+        lr = self._current_lr()
+        wd = self._current_wd()
+        for group in self.optimizer.param_groups:
+            group["lr"] = lr
+            if group["weight_decay"] > 0:
+                group["weight_decay"] = wd
 
         crops = self.augment(batch)  # list of (B, 1, 96, 96) float
 
@@ -217,11 +285,20 @@ class DINOTrainer:
         loss = self.loss_fn(student_outs, teacher_outs)
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        # early-training stabilizers from reference DINO
+        if self.total_steps is not None and self.step_count < int(
+            self.dino_cfg.freeze_last_layer_frac * self.total_steps
+        ):
+            for p in self.student_head.last_linear.parameters():
+                p.grad = None
+        if self.dino_cfg.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(self._trainable_params, self.dino_cfg.grad_clip)
         self.optimizer.step()
 
-        # EMA teacher update
-        update_teacher_ema(self.student, self.teacher, self.dino_cfg.teacher_ema_momentum)
-        update_teacher_ema(self.student_head, self.teacher_head, self.dino_cfg.teacher_ema_momentum)
+        # EMA teacher update (scheduled momentum)
+        m = self._current_teacher_momentum()
+        update_teacher_ema(self.student, self.teacher, m)
+        update_teacher_ema(self.student_head, self.teacher_head, m)
 
         self.step_count += 1
         return float(loss.item())

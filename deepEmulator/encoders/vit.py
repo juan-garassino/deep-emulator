@@ -69,7 +69,11 @@ class Attention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]  # (B, heads, N, head_dim)
         attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, heads, N, N)
         attn = attn.softmax(dim=-1)
-        self.last_attn = attn.detach()
+        # Stash for attention rollout — but only outside training: at DINO
+        # pretrain batch sizes one stashed map is (B, heads, 577, 577) per
+        # block per net ≈ 6 GB of dead GPU memory (student + teacher).
+        # Rollout/visualization paths all run under .eval().
+        self.last_attn = attn.detach() if not self.training else None
         out = (attn @ v).transpose(1, 2).reshape(B, N, D)
         return self.proj(out)
 

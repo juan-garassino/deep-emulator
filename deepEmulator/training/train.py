@@ -237,11 +237,24 @@ def main(argv: list[str] | None = None) -> int:
             },
         }
         if encoder_metadata is not None:
+            # copy the encoder INTO the bundle so it stays portable — an
+            # absolute Colab/RunPod path is meaningless on the local machine
+            import hashlib
+            import shutil
+
+            enc_dst = args.run_dir / "encoder"
+            enc_dst.mkdir(parents=True, exist_ok=True)
+            for name in ("encoder_only.pt", "metadata.json"):
+                src = args.encoder / name
+                if src.exists():
+                    shutil.copy2(src, enc_dst / name)
+            sha = hashlib.sha256((enc_dst / "encoder_only.pt").read_bytes()).hexdigest()
             extra["encoder"] = {
-                "path": str(args.encoder.resolve()),
+                "path": "encoder",  # bundle-relative
+                "sha256": sha,
                 "frozen": True,
                 "latent_dim": encoder_metadata.get("vit_config", {}).get("out_dim"),
-                "preprocessing": "96x96_grayscale",
+                "preprocessing": encoder_metadata.get("preprocessing"),
             }
         write_bundle(
             args.run_dir,

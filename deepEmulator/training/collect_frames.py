@@ -70,6 +70,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--out", type=Path, required=True, help="FrameStorage root directory")
     p.add_argument("--chunk-size", type=int, default=2_000)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--min-diff",
+        type=float,
+        default=2.0,
+        help="Reject frames whose mean |pixel diff| vs the last pushed frame is below "
+        "this (random no-init-state policies produce near-identical title frames). "
+        "0 disables.",
+    )
+    p.add_argument(
+        "--stride",
+        type=int,
+        default=1,
+        help="Consider only every Nth env step for pushing (temporal thinning).",
+    )
     return p.parse_args(argv)
 
 
@@ -87,17 +101,33 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[collect-frames] built {len(envs)} envs: {', '.join(args.cartridges)}")
 
     storage = FrameStorage(args.out, chunk_size=args.chunk_size)
-    collector = FrameCollector(envs, storage, seed=args.seed)
+    collector = FrameCollector(
+        envs, storage, seed=args.seed, min_frame_diff=args.min_diff, stride=args.stride
+    )
 
+    # --frames counts PUSHED frames; the diversity gate may reject many steps,
+    # so cap total env steps to avoid spinning forever on a static screen
+    max_steps = args.frames * max(20, args.stride * 20)
     t0 = time.time()
     last_report = t0
-    for i in range(args.frames):
+    steps = 0
+    while collector.pushed < args.frames and steps < max_steps:
         collector.step()
+        steps += 1
         now = time.time()
         if now - last_report > 5.0:
-            rate = (i + 1) / (now - t0)
-            print(f"  {i + 1:>7d}/{args.frames} frames | {rate:.0f}/s")
+            rate = collector.pushed / (now - t0)
+            print(
+                f"  {collector.pushed:>7d}/{args.frames} frames "
+                f"({collector.rejected} rejected) | {rate:.0f}/s"
+            )
             last_report = now
+    if collector.pushed < args.frames:
+        print(
+            f"[collect-frames] WARNING: step cap hit ({max_steps}) with only "
+            f"{collector.pushed}/{args.frames} frames pushed — screen too static "
+            f"for --min-diff {args.min_diff}? ({collector.rejected} rejected)"
+        )
     storage.flush()
     elapsed = time.time() - t0
 

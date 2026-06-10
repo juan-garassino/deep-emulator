@@ -81,6 +81,8 @@ def evaluate_bundle(
     encoder_path = None
     if "encoder" in metadata and metadata["encoder"].get("path"):
         encoder_path = Path(metadata["encoder"]["path"])
+        if not encoder_path.is_absolute():
+            encoder_path = Path(bundle_dir) / encoder_path  # bundle-relative
 
     env = env_factory(encoder_path)
     agent = DDQNAgent(
@@ -237,7 +239,12 @@ def _knn_retrieval_grid(bundle_dir: Path, *, n_anchors: int = 4, n_neighbors: in
     metadata = json.loads((bundle_dir / "metadata.json").read_text())
     enc_meta = metadata.get("encoder") or {}
     enc_path = enc_meta.get("path")
-    if not enc_path or not Path(enc_path).exists():
+    if not enc_path:
+        return None
+    enc_dir = Path(enc_path)
+    if not enc_dir.is_absolute():
+        enc_dir = bundle_dir / enc_dir  # bundle-relative (portable)
+    if not enc_dir.exists():
         return None
 
     from PIL import Image  # type: ignore
@@ -249,7 +256,7 @@ def _knn_retrieval_grid(bundle_dir: Path, *, n_anchors: int = 4, n_neighbors: in
     if len(frames) < n_anchors + n_neighbors + 1:
         return None
 
-    encoder, _ = load_frozen_encoder(enc_path)
+    encoder, _ = load_frozen_encoder(enc_dir)
     encoder.eval()
 
     # Encode every frame

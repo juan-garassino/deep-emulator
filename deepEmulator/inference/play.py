@@ -200,6 +200,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--episodes", type=int, default=10)
     p.add_argument("--max-episode-steps", type=int, default=4096)
     p.add_argument("--epsilon", type=float, default=0.05)
+    p.add_argument(
+        "--encoder",
+        type=Path,
+        default=None,
+        help="Override the bundle's recorded encoder path (e.g. a local copy).",
+    )
     return p.parse_args(argv)
 
 
@@ -216,6 +222,7 @@ def run_play(
     max_episode_steps: int,
     epsilon: float,
     env_factory=None,  # for tests: inject a fake env factory
+    encoder_override: Path | None = None,  # --encoder flag: wins over metadata
 ) -> int:
     _load_cartridges()
 
@@ -226,8 +233,12 @@ def run_play(
             f"bundle was trained on {bundle_cart!r} but --cartridge is {cartridge!r}"
         )
     encoder_path = None
-    if "encoder" in metadata and metadata["encoder"].get("path"):
+    if encoder_override is not None:
+        encoder_path = Path(encoder_override)
+    elif "encoder" in metadata and metadata["encoder"].get("path"):
         encoder_path = Path(metadata["encoder"]["path"])
+        if not encoder_path.is_absolute():
+            encoder_path = Path(ckpt) / encoder_path  # bundle-relative (portable)
 
     # Build env (real or injected)
     if env_factory is not None:
@@ -353,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         episodes=args.episodes,
         max_episode_steps=args.max_episode_steps,
         epsilon=args.epsilon,
+        encoder_override=args.encoder,
     )
 
 

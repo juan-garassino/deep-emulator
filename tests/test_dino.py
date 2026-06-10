@@ -173,3 +173,88 @@ def test_colab_pretrain_module_imports():
     from deepEmulator.training import colab_pretrain
 
     assert hasattr(colab_pretrain, "run_in_colab")
+
+
+def test_dino_schedules_warmup_then_cosine():
+    from deepEmulator.encoders.augmentations import MultiCropConfig
+    from deepEmulator.encoders.dino import DINOConfig, DINOTrainer
+    from deepEmulator.encoders.vit import ViTConfig
+
+    trainer = DINOTrainer(
+        vit_cfg=ViTConfig(image_size=96, patch_size=8, embed_dim=96, depth=2, num_heads=3),
+        dino_cfg=DINOConfig(out_dim=128, hidden_dim=64, bottleneck_dim=32, learning_rate=1e-3),
+        crop_cfg=MultiCropConfig(n_global=2, n_local=2),
+        device="cpu",
+        total_steps=100,
+    )
+    base = 1e-3
+    trainer.step_count = 0
+    assert trainer._current_lr() < base * 0.2  # warmup start, tiny
+    trainer.step_count = 10  # warmup end (warmup_frac=0.1)
+    assert trainer._current_lr() == pytest.approx(base)
+    trainer.step_count = 55
+    mid = trainer._current_lr()
+    trainer.step_count = 99
+    late = trainer._current_lr()
+    assert base > mid > late >= base * trainer.dino_cfg.final_lr_frac * 0.99
+
+    # WD ramps up, teacher momentum ramps toward 1
+    trainer.step_count = 0
+    wd0, m0 = trainer._current_wd(), trainer._current_teacher_momentum()
+    trainer.step_count = 100
+    wd1, m1 = trainer._current_wd(), trainer._current_teacher_momentum()
+    assert wd0 == pytest.approx(0.04) and wd1 == pytest.approx(0.4)
+    assert m0 == pytest.approx(0.996) and m1 == pytest.approx(1.0)
+
+
+def test_dino_schedules_constant_without_total_steps():
+    from deepEmulator.encoders.augmentations import MultiCropConfig
+    from deepEmulator.encoders.dino import DINOConfig, DINOTrainer
+    from deepEmulator.encoders.vit import ViTConfig
+
+    trainer = DINOTrainer(
+        vit_cfg=ViTConfig(image_size=96, patch_size=8, embed_dim=96, depth=2, num_heads=3),
+        dino_cfg=DINOConfig(out_dim=128, hidden_dim=64, bottleneck_dim=32),
+        crop_cfg=MultiCropConfig(n_global=2, n_local=2),
+        device="cpu",
+    )
+    trainer.step_count = 12345
+    assert trainer._current_lr() == trainer.dino_cfg.learning_rate
+    assert trainer._current_wd() == trainer.dino_cfg.weight_decay
+    assert trainer._current_teacher_momentum() == trainer.dino_cfg.teacher_ema_momentum
+
+
+def test_dino_param_groups_exclude_norms_and_biases_from_wd():
+    from deepEmulator.encoders.augmentations import MultiCropConfig
+    from deepEmulator.encoders.dino import DINOConfig, DINOTrainer
+    from deepEmulator.encoders.vit import ViTConfig
+
+    trainer = DINOTrainer(
+        vit_cfg=ViTConfig(image_size=96, patch_size=8, embed_dim=96, depth=2, num_heads=3),
+        dino_cfg=DINOConfig(out_dim=128, hidden_dim=64, bottleneck_dim=32),
+        crop_cfg=MultiCropConfig(n_global=2, n_local=2),
+        device="cpu",
+    )
+    groups = trainer.optimizer.param_groups
+    assert len(groups) == 2
+    assert groups[0]["weight_decay"] > 0
+    assert groups[1]["weight_decay"] == 0.0
+    # every 1-D param (biases, LayerNorm) must be in the no-decay group
+    no_decay_ids = {id(p) for p in groups[1]["params"]}
+    for module in (trainer.student, trainer.student_head):
+        for name, p in module.named_parameters():
+            if p.requires_grad and p.ndim <= 1:
+                assert id(p) in no_decay_ids, name
+
+
+def test_multicrop_per_sample_crops_differ():
+    """Per-sample crop boxes: two samples in a batch must (statistically) get
+    different geometry — batch-shared crops gave identical view pairs."""
+    from deepEmulator.encoders.augmentations import _random_resized_crop
+
+    torch.manual_seed(0)
+    # sample 0 and 1 are identical inputs; differing outputs => per-sample crop
+    x = torch.rand(1, 1, 96, 96).repeat(8, 1, 1, 1)
+    out = _random_resized_crop(x, 96, (0.05, 0.4))
+    diffs = [(out[0] - out[i]).abs().mean().item() for i in range(1, 8)]
+    assert max(diffs) > 1e-3

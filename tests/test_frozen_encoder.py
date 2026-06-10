@@ -207,7 +207,13 @@ def test_train_cli_passes_encoder_through_to_bundle_metadata(tmp_path, monkeypat
         assert "encoder" in md, md
         assert md["encoder"]["frozen"] is True
         assert md["encoder"]["latent_dim"] == 64
-        assert md["encoder"]["preprocessing"] == "96x96_grayscale"
+        # the encoder bundle in this test records no preprocessing (legacy);
+        # the field now propagates from the ENCODER metadata, not a constant
+        assert md["encoder"]["preprocessing"] is None
+        # bundle-relative portable copy of the encoder
+        assert md["encoder"]["path"] == "encoder"
+        assert (run_dir / "encoder" / "encoder_only.pt").exists()
+        assert len(md["encoder"]["sha256"]) == 64
         # observation_shape should be 1-D since FrozenEncoderEnv was applied
         assert len(md["observation_shape"]) == 1
         assert md["observation_shape"][0] == 3 * 64
@@ -219,3 +225,39 @@ def test_train_cli_passes_encoder_through_to_bundle_metadata(tmp_path, monkeypat
         assert md["env"]["max_episode_steps"] == 5
     finally:
         gb_mod.PyBoyEnv = real_PyBoyEnv
+
+
+def test_load_frozen_encoder_rejects_mismatched_preprocessing(tmp_path):
+    """An encoder pretrained on a render-path corpus must refuse to load for
+    obs-path RL — silent distribution shift was the encoder-track killer."""
+    from deepEmulator.encoders.frozen_wrapper import load_frozen_encoder
+    from deepEmulator.encoders.vit import ViTConfig, ViTTiny
+
+    cfg = ViTConfig(image_size=96, patch_size=8, embed_dim=96, depth=2, num_heads=3, out_dim=64)
+    enc_dir = tmp_path / "render_run"
+    enc_dir.mkdir()
+    torch.save(ViTTiny(cfg).state_dict(), enc_dir / "encoder_only.pt")
+    (enc_dir / "metadata.json").write_text(
+        json.dumps({"algo": "dino", "vit_config": cfg.__dict__,
+                    "preprocessing": "render_rec601_to_96x96"})
+    )
+    with pytest.raises(ValueError, match="preprocessing"):
+        load_frozen_encoder(enc_dir)
+
+
+def test_load_frozen_encoder_accepts_matching_or_missing_preprocessing(tmp_path):
+    from deepEmulator.data.frame_corpus import OBS_PREPROCESSING
+    from deepEmulator.encoders.frozen_wrapper import load_frozen_encoder
+    from deepEmulator.encoders.vit import ViTConfig, ViTTiny
+
+    cfg = ViTConfig(image_size=96, patch_size=8, embed_dim=96, depth=2, num_heads=3, out_dim=64)
+    for preprocessing in (OBS_PREPROCESSING, None):
+        enc_dir = tmp_path / f"run_{preprocessing}"
+        enc_dir.mkdir()
+        torch.save(ViTTiny(cfg).state_dict(), enc_dir / "encoder_only.pt")
+        md = {"algo": "dino", "vit_config": cfg.__dict__}
+        if preprocessing:
+            md["preprocessing"] = preprocessing
+        (enc_dir / "metadata.json").write_text(json.dumps(md))
+        model, _ = load_frozen_encoder(enc_dir)
+        assert model is not None

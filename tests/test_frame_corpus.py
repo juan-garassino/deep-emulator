@@ -108,3 +108,82 @@ def test_collector_handles_episode_done():
     # FakeEnv resets at t=50; run past it
     coll.run(120)
     assert len(ring) == 120
+
+
+def test_default_extractor_uses_obs_path_not_render():
+    """The corpus must see the same distribution FrozenEncoderEnv encodes —
+    the env OBSERVATION, not render()."""
+    from deepEmulator.data.frame_corpus import FrameCollector, FrameRing
+
+    class _DistinguishableEnv(FakeEnv):
+        def render(self):
+            return np.full((144, 160, 3), 200, dtype=np.uint8)  # render = bright
+
+        def _obs(self):
+            return np.full((3, 72, 80), 10, dtype=np.uint8)  # obs = dark
+
+        def reset(self, *, seed=None):
+            return self._obs(), {}
+
+        def step(self, action):
+            return self._obs(), 0.0, False, False, {}
+
+    ring = FrameRing(capacity=10)
+    c = FrameCollector([_DistinguishableEnv()], ring)
+    c.step()
+    frame = ring.sample(1)[0]
+    assert frame.mean() < 50  # obs path (dark), not render (bright)
+
+
+def test_collector_min_diff_rejects_static_frames():
+    from deepEmulator.data.frame_corpus import FrameCollector, FrameRing
+
+    class _StaticEnv(FakeEnv):
+        def step(self, action):
+            return np.zeros((3, 72, 80), dtype=np.uint8), 0.0, False, False, {}
+
+        def reset(self, *, seed=None):
+            return np.zeros((3, 72, 80), dtype=np.uint8), {}
+
+    ring = FrameRing(capacity=100)
+    c = FrameCollector([_StaticEnv()], ring, min_frame_diff=2.0)
+    for _ in range(20):
+        c.step()
+    assert c.pushed == 1  # first frame only; the other 19 identical ones rejected
+    assert c.rejected == 19
+
+
+def test_collector_stride_thins_pushes():
+    from deepEmulator.data.frame_corpus import FrameCollector, FrameRing
+
+    ring = FrameRing(capacity=100)
+    c = FrameCollector([FakeEnv()], ring, stride=4)
+    for _ in range(20):
+        c.step()
+    assert c.pushed == 5  # every 4th step
+
+
+def test_iter_batches_covers_all_frames_once_per_epoch_without_concat(tmp_path):
+    from deepEmulator.data.frame_corpus import FrameStorage
+
+    store = FrameStorage(tmp_path / "c", chunk_size=10)
+    rng = np.random.default_rng(0)
+    # 35 distinguishable frames across 3 full chunks + buffer
+    for i in range(35):
+        f = np.full((1, 96, 96), i, dtype=np.uint8)
+        store.push(f)
+
+    seen = []
+    for batch in store.iter_batches(4, shuffle=True, seed=1):
+        assert batch.shape == (4, 1, 96, 96)
+        seen.extend(int(b[0, 0, 0]) for b in batch)
+    # 35 frames -> 8 full batches of 4 = 32 seen, no duplicates
+    assert len(seen) == 32
+    assert len(set(seen)) == 32
+
+
+def test_frame_storage_records_preprocessing(tmp_path):
+    from deepEmulator.data.frame_corpus import OBS_PREPROCESSING, FrameStorage
+
+    store = FrameStorage(tmp_path / "c")
+    assert store.preprocessing == OBS_PREPROCESSING

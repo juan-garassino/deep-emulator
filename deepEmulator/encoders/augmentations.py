@@ -29,8 +29,8 @@ def _gaussian_blur(x: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     return F.conv2d(x, k, padding=pad)
 
 
-def _brightness_contrast(x: torch.Tensor, brightness: float, contrast: float) -> torch.Tensor:
-    """x: (B, 1, H, W) in [0, 1]. Per-sample identical scalars."""
+def _brightness_contrast(x: torch.Tensor, brightness: torch.Tensor, contrast: torch.Tensor) -> torch.Tensor:
+    """x: (B, 1, H, W) in [0, 1]. brightness/contrast: (B, 1, 1, 1) per-sample draws."""
     mean = x.mean(dim=(-2, -1), keepdim=True)
     x = (x - mean) * contrast + mean
     x = x + brightness
@@ -38,18 +38,27 @@ def _brightness_contrast(x: torch.Tensor, brightness: float, contrast: float) ->
 
 
 def _random_resized_crop(x: torch.Tensor, out_size: int, scale: tuple[float, float]) -> torch.Tensor:
-    """Same crop applied to all samples in the batch (simpler, still effective at our scale).
+    """PER-SAMPLE random crop boxes via affine_grid/grid_sample (batched, no
+    python loop). Batch-shared crops gave every sample in a batch geometrically
+    identical view pairs — much weaker invariances than reference DINO.
 
     x: (B, 1, H, W) → (B, 1, out_size, out_size)
     """
-    _, _, H, W = x.shape
-    s = random.uniform(*scale)
-    side = max(8, int(round((min(H, W) ** 2 * s) ** 0.5)))
-    side = min(side, min(H, W))
-    y0 = random.randint(0, H - side)
-    x0 = random.randint(0, W - side)
-    crop = x[..., y0 : y0 + side, x0 : x0 + side]
-    return F.interpolate(crop, size=out_size, mode="bilinear", align_corners=False)
+    B, _, H, W = x.shape
+    short = float(min(H, W))
+    s = torch.empty(B, device=x.device).uniform_(*scale)
+    side = (s.sqrt() * short).clamp(min=8.0, max=short)  # crop side in pixels
+    y0 = torch.rand(B, device=x.device) * (H - side)
+    x0 = torch.rand(B, device=x.device) * (W - side)
+    # normalized [-1, 1] center + scale for affine_grid (x = horizontal first)
+    theta = torch.zeros(B, 2, 3, device=x.device, dtype=torch.float32)
+    theta[:, 0, 0] = side / W
+    theta[:, 0, 2] = (2 * x0 + side) / W - 1
+    theta[:, 1, 1] = side / H
+    theta[:, 1, 2] = (2 * y0 + side) / H - 1
+    grid = F.affine_grid(theta, (B, 1, out_size, out_size), align_corners=False)
+    out = F.grid_sample(x.float(), grid, mode="bilinear", align_corners=False)
+    return out.clamp(0.0, 1.0)
 
 
 @dataclass
@@ -79,12 +88,14 @@ class MultiCropAugment:
         self.cfg = cfg or MultiCropConfig()
 
     def _augment_one(self, x: torch.Tensor, scale: tuple[float, float]) -> torch.Tensor:
+        B = x.shape[0]
         x = _random_resized_crop(x, self.cfg.out_size, scale)
-        # Brightness / contrast
-        b = random.uniform(*self.cfg.brightness_range)
-        c = random.uniform(*self.cfg.contrast_range)
+        # Brightness / contrast — per-sample draws
+        b = torch.empty(B, 1, 1, 1, device=x.device).uniform_(*self.cfg.brightness_range)
+        c = torch.empty(B, 1, 1, 1, device=x.device).uniform_(*self.cfg.contrast_range)
         x = _brightness_contrast(x, b, c)
-        # Gaussian blur with prob
+        # Gaussian blur with prob — batch-shared radius per view (the kernel
+        # conv is the expensive part; per-sample radii buy little here)
         if random.random() < self.cfg.blur_prob:
             r = random.uniform(*self.cfg.blur_radius_range)
             # kernel normalization is only float32-exact, so blur can overshoot
