@@ -43,6 +43,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--n-step", type=int, default=3, help="n-step returns (1 = classic TD).")
     p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed random/numpy/torch for reproducible runs; recorded in metadata.",
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
         help="Continue from the latest run under checkpoints/<slug>/ (Drive-friendly).",
@@ -65,6 +71,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+
+    if args.seed is not None:
+        import random
+
+        import numpy as np
+        import torch
+
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
 
     _load_cartridges()
     from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
@@ -105,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         headless=args.headless,
         max_steps=args.max_episode_steps,
     )
+    inner_env = env  # pre-wrap reference for the metadata env block
 
     encoder_metadata: dict | None = None
     if args.encoder is not None:
@@ -118,21 +136,47 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     obs_shape = env.observation_space.shape
+    config = DDQNConfig(
+        gamma=args.gamma,
+        exploration_anneal_steps=max(1, int(args.eps_anneal_frac * args.steps)),
+        normalize_obs=len(obs_shape) == 3,  # pixels only; latents pass through
+        dueling=args.dueling,
+        n_step=max(1, args.n_step),
+    )
+
+    resume_state: dict | None = None
+    if resume_from is not None:
+        resume_state, resume_md = load_bundle(resume_from, map_location="cpu")
+        net_block = resume_md.get("network")
+        if net_block is None:
+            print(
+                "[deepemu-train] resuming a pre-fix bundle: adopting legacy settings "
+                "(no dueling, no normalization, n_step=1)"
+            )
+            config.dueling = False
+            config.normalize_obs = False
+            config.n_step = 1
+        else:
+            # the recorded architecture wins over CLI flags — a dueling
+            # state dict cannot load into a non-dueling net and vice versa
+            if bool(net_block.get("dueling", False)) != config.dueling:
+                print(
+                    f"[deepemu-train] adopting dueling={net_block.get('dueling')} "
+                    "from the resumed bundle (overrides CLI)"
+                )
+                config.dueling = bool(net_block.get("dueling", False))
+            config.normalize_obs = bool(net_block.get("normalize_obs", config.normalize_obs))
+            config.n_step = int(net_block.get("n_step", config.n_step))
+            config.gamma = float(net_block.get("gamma", config.gamma))
+
     agent = DDQNAgent(
         obs_shape=obs_shape,
         n_actions=env.action_space.n,
-        config=DDQNConfig(
-            gamma=args.gamma,
-            exploration_anneal_steps=max(1, int(args.eps_anneal_frac * args.steps)),
-            normalize_obs=len(obs_shape) == 3,  # pixels only; latents pass through
-            dueling=args.dueling,
-            n_step=max(1, args.n_step),
-        ),
+        config=config,
     )
 
-    if resume_from is not None:
-        agent_state, metadata = load_bundle(resume_from, map_location=agent.device)
-        agent.load_state_dict(agent_state)
+    if resume_state is not None:
+        agent.load_state_dict(resume_state)
         print(
             f"[deepemu-train] resumed from {resume_from} "
             f"(curr_step={agent.curr_step}, epsilon={agent.exploration_rate:.4f})"
@@ -150,7 +194,24 @@ def main(argv: list[str] | None = None) -> int:
     })
 
     def _save_bundle() -> None:
-        extra: dict = {"global_steps": agent.curr_step}
+        extra: dict = {
+            "global_steps": agent.curr_step,
+            "seed": args.seed,
+            # everything play/eval need to rebuild the exact same env + agent
+            "env": {
+                "frame_stack": getattr(inner_env, "frame_stack", None),
+                "action_freq": getattr(inner_env, "action_freq", None),
+                "press_ticks": getattr(inner_env, "press_ticks", None),
+                "max_episode_steps": args.max_episode_steps,
+                "reward_clip": getattr(inner_env, "reward_clip", None),
+            },
+            "network": {
+                "dueling": agent.config.dueling,
+                "normalize_obs": agent.config.normalize_obs,
+                "n_step": agent.config.n_step,
+                "gamma": agent.config.gamma,
+            },
+        }
         if encoder_metadata is not None:
             extra["encoder"] = {
                 "path": str(args.encoder.resolve()),
@@ -178,9 +239,12 @@ def main(argv: list[str] | None = None) -> int:
         while agent.curr_step < args.steps:
             action = agent.act(obs)
             next_obs, reward, terminated, truncated, info = env.step(action)
+            # done drives reset/logging only — the buffer gets terminated, so
+            # time-limit truncations keep their bootstrap (Crystal/Coral only
+            # ever truncate; caching done here deflated Q at every horizon)
             done = bool(terminated or truncated)
 
-            agent.cache(obs, next_obs, action, reward, done)
+            agent.cache(obs, next_obs, action, reward, bool(terminated), bool(truncated))
             q, loss = agent.learn()
             logger.log_step(reward, loss, q)
             if q is not None and loss is not None:
@@ -202,6 +266,15 @@ def main(argv: list[str] | None = None) -> int:
                 row = logger.end_episode(
                     episode=episode, step=agent.curr_step, epsilon=agent.exploration_rate
                 )
+                wb.log(
+                    {
+                        "episode": episode,
+                        "MeanReward": float(row["MeanReward"]),
+                        "MeanLength": float(row["MeanLength"]),
+                        "epsilon": float(agent.exploration_rate),
+                    },
+                    step=agent.curr_step,
+                )
                 print(
                     f"  ep {episode:4d} | step {agent.curr_step:7d} "
                     f"| eps {row['Epsilon']} | meanR {row['MeanReward']}"
@@ -211,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
                 trajectories.start_episode(episode)
     finally:
         trajectories.close()
+        logger.plot()  # populate plots/*.jpg (no-op without matplotlib)
         _save_bundle()
         env.close()
         wb.finish()

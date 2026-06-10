@@ -40,6 +40,7 @@ def make_env(
     encoder_path: Path | None,
     headless: bool = True,
     max_steps: int = 4096,
+    action_set: list | None = None,
 ):
     from deepEmulator.core import registry
     from deepEmulator.platforms.gameboy import PyBoyEnv
@@ -47,6 +48,9 @@ def make_env(
     _load_cartridges()
     AdapterCls = registry.get(cartridge)
     adapter = AdapterCls(init_state=init_state)
+    if action_set is not None:
+        # bundle's recorded action set wins — policy head indices must match
+        adapter.action_set = list(action_set)
     env = PyBoyEnv(adapter, rom_path=rom, init_state=init_state, headless=headless, max_steps=max_steps)
     if encoder_path is not None:
         from deepEmulator.encoders.frozen_wrapper import FrozenEncoderEnv, load_frozen_encoder
@@ -71,7 +75,7 @@ def evaluate_bundle(
     Up to `capture_frames_per_episode` uniformly-sampled raw RGB frames are saved
     per episode into `eval_frames.npz` for downstream k-NN retrieval (F5).
     """
-    from deepEmulator.agents.ddqn_torch import DDQNAgent
+    from deepEmulator.agents.ddqn_torch import DDQNAgent, config_from_metadata
 
     agent_state, metadata = load_bundle(bundle_dir)
     encoder_path = None
@@ -82,6 +86,7 @@ def evaluate_bundle(
     agent = DDQNAgent(
         obs_shape=tuple(metadata["observation_shape"]),
         n_actions=len(metadata["action_set"]),
+        config=config_from_metadata(metadata),
         device="cpu",
     )
     agent.load_state_dict(agent_state)
@@ -105,6 +110,14 @@ def evaluate_bundle(
 
     try:
         for ep in range(n_episodes):
+            # per-episode reseed: agent.act draws from the module-global RNGs,
+            # so baseline and treatment consume IDENTICAL epsilon coin-flips —
+            # the whole point of the head-to-head harness
+            import random as _random
+
+            _random.seed(ep)
+            np.random.seed(ep)
+            torch.manual_seed(ep)
             obs, _ = env.reset(seed=ep)
             total_reward = 0.0
             length = 0
@@ -381,17 +394,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _read_metadata(bundle: Path) -> dict:
+    from deepEmulator.utils.checkpoints import find_latest_run
+
+    md_path = bundle / "metadata.json"
+    if not md_path.exists():
+        resolved = find_latest_run(bundle)
+        if resolved is not None:
+            md_path = resolved / "metadata.json"
+    return json.loads(md_path.read_text())
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-
-    def env_factory(encoder_path: Path | None):
-        return make_env(
-            cartridge=args.cartridge,
-            rom=args.rom,
-            init_state=args.init_state,
-            encoder_path=encoder_path,
-            max_steps=args.max_episode_steps,
-        )
 
     bundles = [args.baseline]
     if args.treatment is not None:
@@ -399,6 +414,23 @@ def main(argv: list[str] | None = None) -> int:
 
     summaries = []
     for b in bundles:
+        md = _read_metadata(b)
+        bundle_cart = str(md.get("cartridge_title", "")).upper()
+        if bundle_cart and bundle_cart != args.cartridge.upper():
+            raise ValueError(
+                f"bundle {b} was trained on {bundle_cart!r} but --cartridge is {args.cartridge!r}"
+            )
+
+        def env_factory(encoder_path: Path | None, _aset=md.get("action_set")):
+            return make_env(
+                cartridge=args.cartridge,
+                rom=args.rom,
+                init_state=args.init_state,
+                encoder_path=encoder_path,
+                max_steps=args.max_episode_steps,
+                action_set=_aset,
+            )
+
         print(f"[eval] evaluating {b} on {args.episodes} episodes...")
         summary = evaluate_bundle(
             b, env_factory=env_factory, n_episodes=args.episodes, epsilon=args.epsilon

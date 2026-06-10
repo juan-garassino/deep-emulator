@@ -49,6 +49,28 @@ class DDQNConfig:
     n_step: int = 1
 
 
+def config_from_metadata(metadata: dict) -> DDQNConfig:
+    """Build an inference-compatible config from a bundle's metadata.
+
+    Bundles written before the `network` block existed get legacy settings
+    (no dueling, no normalization, n_step=1) with a warning — their state
+    dicts only load into the original architecture.
+    """
+    net = metadata.get("network")
+    if net is None:
+        print(
+            "[ddqn] pre-fix bundle (no `network` metadata): assuming legacy settings "
+            "(no dueling, no normalization, n_step=1)"
+        )
+        return DDQNConfig(dueling=False, normalize_obs=False, n_step=1)
+    return DDQNConfig(
+        dueling=bool(net.get("dueling", False)),
+        normalize_obs=bool(net.get("normalize_obs", False)),
+        n_step=int(net.get("n_step", 1)),
+        gamma=float(net.get("gamma", 0.99)),
+    )
+
+
 # --- network ----------------------------------------------------------------
 class _DuelingHead(nn.Module):
     """Trunk -> V(s) + A(s, a), combined as Q = V + A - mean(A)."""

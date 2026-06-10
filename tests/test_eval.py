@@ -62,7 +62,7 @@ def _make_fake_bundle(tmp_path: Path, *, obs_shape=(3, 72, 80), n_actions=7) -> 
     bundle = write_bundle(
         tmp_path / "bundle",
         agent_state=agent.state_dict(),
-        cartridge_title="FAKE",
+        cartridge_title="POKEMON RED",
         cartridge_platform="gameboy",
         action_set=list(range(n_actions)),
         obs_shape=obs_shape,
@@ -200,7 +200,7 @@ def test_knn_grid_renders_for_encoder_bundle(tmp_path):
     bundle = write_bundle(
         tmp_path / "ddqn_run",
         agent_state=agent.state_dict(),
-        cartridge_title="FAKE",
+        cartridge_title="POKEMON RED",
         cartridge_platform="gameboy",
         action_set=list(range(7)),
         obs_shape=(3, 72, 80),
@@ -243,7 +243,7 @@ def test_report_includes_knn_section_when_encoder_present(tmp_path):
     bundle = write_bundle(
         tmp_path / "b",
         agent_state=agent.state_dict(),
-        cartridge_title="FAKE",
+        cartridge_title="POKEMON RED",
         cartridge_platform="gameboy",
         action_set=list(range(7)),
         obs_shape=(3, 72, 80),
@@ -286,3 +286,69 @@ def test_end_to_end_cli_eval(tmp_path, monkeypatch):
     assert rc == 0
     assert (tmp_path / "report.html").exists()
     assert (bundle / "eval_episodes.tsv").exists()
+
+
+def test_eval_main_rejects_cartridge_mismatch(tmp_path, monkeypatch):
+    import sys
+
+    from deepEmulator.training import eval as eval_mod
+
+    bundle = _make_fake_bundle(tmp_path)
+    monkeypatch.setattr(eval_mod, "make_env", lambda **kw: _FakeEvalEnv(episode_length=4))
+    monkeypatch.setattr(sys, "argv", [
+        "deepemu-eval",
+        "--baseline", str(bundle),
+        "--cartridge", "POKEMON CRYSTAL",  # bundle says POKEMON RED
+        "--rom", str(tmp_path / "fake.gb"),
+        "--episodes", "1",
+        "--out", str(tmp_path / "report.html"),
+    ])
+    with pytest.raises(ValueError, match="trained on"):
+        eval_mod.main()
+
+
+def test_eval_per_episode_reseed_makes_epsilon_stream_reproducible(tmp_path):
+    """Two evaluations of the same bundle must consume identical epsilon
+    coin-flips — the basis of fair baseline-vs-treatment comparison."""
+    from deepEmulator.training.eval import evaluate_bundle
+
+    bundle = _make_fake_bundle(tmp_path)
+
+    class _SpyEnv(_FakeEvalEnv):
+        def __init__(self):
+            super().__init__(episode_length=6)
+            self.actions: list[int] = []
+
+        def step(self, action):
+            self.actions.append(int(action))
+            return super().step(action)
+
+    seen = []
+    for _ in range(2):
+        env = _SpyEnv()
+        evaluate_bundle(
+            bundle,
+            env_factory=lambda _e, _env=env: _env,
+            n_episodes=2,
+            epsilon=0.5,
+            capture_frames_per_episode=0,
+        )
+        seen.append(env.actions)
+    assert seen[0] == seen[1]
+
+
+def test_config_from_metadata_legacy_and_new():
+    from deepEmulator.agents.ddqn_torch import config_from_metadata
+
+    legacy = config_from_metadata({"cartridge_title": "X"})
+    assert legacy.dueling is False
+    assert legacy.normalize_obs is False
+    assert legacy.n_step == 1
+
+    new = config_from_metadata(
+        {"network": {"dueling": True, "normalize_obs": True, "n_step": 3, "gamma": 0.95}}
+    )
+    assert new.dueling is True
+    assert new.normalize_obs is True
+    assert new.n_step == 3
+    assert new.gamma == pytest.approx(0.95)

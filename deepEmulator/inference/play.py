@@ -30,16 +30,26 @@ from typing import Any
 import numpy as np
 import torch
 
-from deepEmulator.agents.ddqn_torch import DDQNAgent
+from deepEmulator.agents.ddqn_torch import DDQNAgent, config_from_metadata
 from deepEmulator.cartridges import load_all as _load_cartridges
 from deepEmulator.utils.checkpoints import load_bundle
 
 
-def _build_inner_env(cartridge: str, rom: Path, init_state: Path | None, visible: bool):
+def _build_inner_env(
+    cartridge: str,
+    rom: Path,
+    init_state: Path | None,
+    visible: bool,
+    action_set: list | None = None,
+):
     from deepEmulator.core import registry
 
     AdapterCls = registry.get(cartridge)
     adapter = AdapterCls(init_state=init_state) if init_state else AdapterCls()
+    if action_set is not None:
+        # bundle's recorded action set wins — the policy head's action indices
+        # must match what it was trained on
+        adapter.action_set = list(action_set)
     platform = getattr(adapter, "platform", "gameboy")
     if platform == "gameboy":
         from deepEmulator.platforms.gameboy import PyBoyEnv
@@ -210,6 +220,11 @@ def run_play(
     _load_cartridges()
 
     agent_state, metadata = load_bundle(ckpt)
+    bundle_cart = str(metadata.get("cartridge_title", "")).upper()
+    if bundle_cart and bundle_cart != cartridge.upper():
+        raise ValueError(
+            f"bundle was trained on {bundle_cart!r} but --cartridge is {cartridge!r}"
+        )
     encoder_path = None
     if "encoder" in metadata and metadata["encoder"].get("path"):
         encoder_path = Path(metadata["encoder"]["path"])
@@ -218,7 +233,9 @@ def run_play(
     if env_factory is not None:
         env = env_factory()
     else:
-        env = _build_inner_env(cartridge, rom, init_state, visible=visible)
+        env = _build_inner_env(
+            cartridge, rom, init_state, visible=visible, action_set=metadata.get("action_set")
+        )
         if encoder_path is not None:
             from deepEmulator.encoders.frozen_wrapper import FrozenEncoderEnv, load_frozen_encoder
 
@@ -228,6 +245,7 @@ def run_play(
     agent = DDQNAgent(
         obs_shape=tuple(metadata["observation_shape"]),
         n_actions=len(metadata["action_set"]),
+        config=config_from_metadata(metadata),
         device="cpu",
     )
     agent.load_state_dict(agent_state)

@@ -211,5 +211,11 @@ def test_train_cli_passes_encoder_through_to_bundle_metadata(tmp_path, monkeypat
         # observation_shape should be 1-D since FrozenEncoderEnv was applied
         assert len(md["observation_shape"]) == 1
         assert md["observation_shape"][0] == 3 * 64
+        # metadata contract: env + network + seed blocks (play/eval rebuild from these)
+        assert "env" in md and "network" in md and "seed" in md
+        assert md["network"]["dueling"] is True  # train.py default for new runs
+        assert md["network"]["normalize_obs"] is False  # latent obs are never normalized
+        assert md["network"]["n_step"] == 3
+        assert md["env"]["max_episode_steps"] == 5
     finally:
         gb_mod.PyBoyEnv = real_PyBoyEnv
