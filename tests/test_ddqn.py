@@ -34,7 +34,7 @@ def test_cache_stores_uint8_states_not_float32():
     # And _recall casts to float for the gradient step
     for _ in range(3):
         agent.cache(obs, obs, 0, 0.0, False)
-    s, ns, a, r, d = agent._recall()
+    s, ns, a, r, d, disc = agent._recall()
     assert s.dtype == torch.float32
     assert ns.dtype == torch.float32
 
@@ -183,3 +183,120 @@ def test_default_gamma_is_099():
     from deepEmulator.agents.ddqn_torch import DDQNConfig
 
     assert DDQNConfig().gamma == pytest.approx(0.99)
+
+
+def test_dueling_forward_shapes_cnn_and_mlp():
+    from deepEmulator.agents.ddqn_torch import DDQNNet
+
+    net = DDQNNet((3, 72, 80), 7, dueling=True)
+    out = net(torch.zeros(2, 3, 72, 80), mode="online")
+    assert out.shape == (2, 7)
+    assert net(torch.zeros(2, 3, 72, 80), mode="target").shape == (2, 7)
+
+    net_mlp = DDQNNet((64,), 5, dueling=True)
+    assert net_mlp(torch.zeros(2, 64), mode="online").shape == (2, 5)
+
+
+def test_dueling_q_is_v_plus_centered_advantage():
+    from deepEmulator.agents.ddqn_torch import DDQNNet
+
+    net = DDQNNet((64,), 5, dueling=True)
+    x = torch.randn(4, 64)
+    with torch.no_grad():
+        q = net(x, mode="online")
+        z = net.online.trunk(x)
+        v = net.online.value(z)
+        a = net.online.advantage(z)
+    assert torch.allclose(q, v + a - a.mean(dim=1, keepdim=True), atol=1e-6)
+
+
+def test_dueling_state_dict_roundtrip():
+    from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
+
+    cfg = DDQNConfig(dueling=True)
+    a1 = DDQNAgent(obs_shape=(3, 72, 80), n_actions=7, config=cfg, device="cpu")
+    a2 = DDQNAgent(obs_shape=(3, 72, 80), n_actions=7, config=cfg, device="cpu")
+    a2.load_state_dict(a1.state_dict())
+    x = torch.randn(1, 3, 72, 80)
+    with torch.no_grad():
+        assert torch.allclose(a1.net(x, mode="online"), a2.net(x, mode="online"))
+
+
+def test_legacy_non_dueling_state_dict_keys_unchanged():
+    """dueling=False must reproduce the pre-dueling Sequential exactly so old
+    model.pt files keep loading."""
+    from deepEmulator.agents.ddqn_torch import DDQNNet
+
+    net = DDQNNet((3, 72, 80), 7, dueling=False)
+    keys = set(net.online.state_dict().keys())
+    # the original layout: Sequential(conv_stack, Linear, ReLU, Linear)
+    assert "1.weight" in keys and "3.weight" in keys
+    assert not any(k.startswith(("value", "advantage", "trunk")) for k in keys)
+
+
+def test_nstep_return_math_hand_computed():
+    """n=3, rewards 1,2,3, gamma 0.5: R = 1 + 0.5*2 + 0.25*3 = 2.75, discount 0.125."""
+    from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
+
+    cfg = DDQNConfig(n_step=3, gamma=0.5, deque_size=100)
+    agent = DDQNAgent(obs_shape=(4,), n_actions=2, config=cfg, device="cpu")
+    obs = [np.full((4,), i, dtype=np.float32) for i in range(5)]
+    agent.cache(obs[0], obs[1], 0, 1.0, False)
+    agent.cache(obs[1], obs[2], 1, 2.0, False)
+    assert len(agent.memory) == 0  # window not mature yet
+    agent.cache(obs[2], obs[3], 0, 3.0, False)
+    assert len(agent.memory) == 1
+    s, ns, a, r, d, disc = agent.memory[0]
+    assert float(r) == pytest.approx(2.75)
+    assert float(disc) == pytest.approx(0.125)
+    assert int(a) == 0  # action of the window's FIRST step
+    assert np.allclose(s.numpy(), obs[0])
+    assert np.allclose(ns.numpy(), obs[3])  # next_state of the window's LAST step
+    assert float(d) == 0.0
+
+
+def test_nstep_flush_on_terminated_marks_done():
+    from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
+
+    cfg = DDQNConfig(n_step=3, gamma=0.5, deque_size=100)
+    agent = DDQNAgent(obs_shape=(4,), n_actions=2, config=cfg, device="cpu")
+    obs = np.zeros((4,), dtype=np.float32)
+    agent.cache(obs, obs, 0, 1.0, False)
+    agent.cache(obs, obs, 0, 1.0, True)  # terminal on step 2
+    # flush: both partial windows emitted, queue empty
+    assert len(agent.memory) == 2
+    assert len(agent._nstep_queue) == 0
+    for entry in agent.memory:
+        *_, d, disc = entry
+        assert float(d) == 1.0
+    # first window spans 2 steps (disc 0.25), second spans 1 (disc 0.5)
+    assert float(agent.memory[0][5]) == pytest.approx(0.25)
+    assert float(agent.memory[1][5]) == pytest.approx(0.5)
+
+
+def test_nstep_flush_on_truncated_keeps_bootstrap():
+    """Truncation flushes the window but does NOT cut the bootstrap (d=0)."""
+    from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
+
+    cfg = DDQNConfig(n_step=3, gamma=0.5, deque_size=100)
+    agent = DDQNAgent(obs_shape=(4,), n_actions=2, config=cfg, device="cpu")
+    obs = np.zeros((4,), dtype=np.float32)
+    agent.cache(obs, obs, 0, 1.0, False)
+    agent.cache(obs, obs, 0, 1.0, False, truncated=True)
+    assert len(agent.memory) == 2
+    assert len(agent._nstep_queue) == 0
+    for entry in agent.memory:
+        *_, d, _ = entry
+        assert float(d) == 0.0
+
+
+def test_nstep_1_matches_classic_behavior():
+    from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
+
+    cfg = DDQNConfig(n_step=1, gamma=0.9, deque_size=100)
+    agent = DDQNAgent(obs_shape=(4,), n_actions=2, config=cfg, device="cpu")
+    obs = np.zeros((4,), dtype=np.float32)
+    agent.cache(obs, obs, 1, 5.0, True)
+    assert len(agent.memory) == 1
+    s, ns, a, r, d, disc = agent.memory[0]
+    assert float(r) == 5.0 and float(d) == 1.0 and float(disc) == pytest.approx(0.9)

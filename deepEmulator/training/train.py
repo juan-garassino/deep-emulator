@@ -36,6 +36,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Linearly anneal epsilon 1.0 -> min over this fraction of --steps.",
     )
     p.add_argument(
+        "--dueling",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Dueling V/A head (default on for new runs; --no-dueling for the classic net).",
+    )
+    p.add_argument("--n-step", type=int, default=3, help="n-step returns (1 = classic TD).")
+    p.add_argument(
         "--resume",
         action="store_true",
         help="Continue from the latest run under checkpoints/<slug>/ (Drive-friendly).",
@@ -118,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
             gamma=args.gamma,
             exploration_anneal_steps=max(1, int(args.eps_anneal_frac * args.steps)),
             normalize_obs=len(obs_shape) == 3,  # pixels only; latents pass through
+            dueling=args.dueling,
+            n_step=max(1, args.n_step),
         ),
     )
 
