@@ -67,6 +67,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Parallel worker envs (spawned processes). 1 = the classic serial loop.",
     )
     p.add_argument(
+        "--amp",
+        action="store_true",
+        help="Mixed-precision learn steps (CUDA only; no-op on CPU). Benchmark first.",
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
         help="Continue from the latest run under checkpoints/<slug>/ (Drive-friendly).",
@@ -203,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         dueling=args.dueling,
         n_step=max(1, args.n_step),
         n_envs=args.num_envs,
+        amp=args.amp,
     )
 
     resume_state: dict | None = None

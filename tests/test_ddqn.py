@@ -281,3 +281,23 @@ def test_nstep_1_matches_classic_behavior():
     assert len(agent.memory) == 1
     s, ns, a, r, d, disc = agent.memory.sample(1)
     assert float(r[0]) == 5.0 and float(d[0]) == 1.0 and float(disc[0]) == pytest.approx(0.9)
+
+
+def test_amp_flag_is_noop_on_cpu_and_checkpoint_tolerant():
+    from deepEmulator.agents.ddqn_torch import DDQNAgent, DDQNConfig
+
+    cfg = DDQNConfig(burnin=2, batch_size=4, learn_every=1, sync_every=1000, amp=True)
+    agent = DDQNAgent(obs_shape=(3, 72, 80), n_actions=7, config=cfg, device="cpu")
+    assert agent._amp_active is False  # CPU: silently disabled
+    obs = np.zeros((3, 72, 80), dtype=np.uint8)
+    for _ in range(8):
+        agent.cache(obs, obs, agent.act(obs), 0.1, False)
+    q, loss = agent.learn()
+    assert q is not None
+
+    sd = agent.state_dict()
+    assert "scaler" in sd
+    # pre-AMP bundles lack the scaler key — load must tolerate that
+    sd.pop("scaler")
+    agent2 = DDQNAgent(obs_shape=(3, 72, 80), n_actions=7, config=cfg, device="cpu")
+    agent2.load_state_dict(sd)

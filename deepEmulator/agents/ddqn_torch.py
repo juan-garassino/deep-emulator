@@ -46,6 +46,10 @@ class DDQNConfig:
     dueling: bool = False
     # number of parallel envs feeding the buffer (per-env sub-rings)
     n_envs: int = 1
+    # mixed-precision learn steps (CUDA only — silently a no-op on CPU so the
+    # same config runs everywhere). Off by default; benchmark on a real pod
+    # before enabling for long runs.
+    amp: bool = False
     # n-step returns. 1 = classic one-step TD (byte-identical to the old
     # behavior). >1 aggregates R = sum(gamma^i * r_i) before insertion and
     # bootstraps with gamma^n; partial windows flush at episode end.
@@ -198,6 +202,12 @@ class DDQNAgent:
         self.eval_epsilon = 0.0  # used by act(explore=False); play/eval set this
         self.curr_step = 0
         self._needs_episode_start = True
+        self._amp_active = bool(self.config.amp) and self.device == "cuda"
+        try:
+            # torch >= 2.3 unified API
+            self.scaler = torch.amp.GradScaler("cuda", enabled=self._amp_active)
+        except (AttributeError, TypeError):
+            self.scaler = torch.cuda.amp.GradScaler(enabled=self._amp_active)
 
     # --- preprocessing -----------------------------------------------------
     def _prep(self, x: torch.Tensor) -> torch.Tensor:
@@ -292,19 +302,22 @@ class DDQNAgent:
         s, ns, a, r, d, disc = self._recall()
         idx = torch.arange(self.config.batch_size, device=self.device)
 
-        q_est = self.net(s, mode="online")[idx, a]
-        with torch.no_grad():
-            next_q_online = self.net(ns, mode="online")
-            best_a = torch.argmax(next_q_online, dim=1)
-            next_q_target = self.net(ns, mode="target")[idx, best_a]
-            # disc = gamma^k for the k-step return ending at ns (k=1 classic)
-            q_tgt = r + (1.0 - d) * disc * next_q_target
+        with torch.autocast("cuda", dtype=torch.float16, enabled=self._amp_active):
+            q_est = self.net(s, mode="online")[idx, a]
+            with torch.no_grad():
+                next_q_online = self.net(ns, mode="online")
+                best_a = torch.argmax(next_q_online, dim=1)
+                next_q_target = self.net(ns, mode="target")[idx, best_a]
+                # disc = gamma^k for the k-step return ending at ns (k=1 classic)
+                q_tgt = r + (1.0 - d) * disc * next_q_target
+            loss = self.loss_fn(q_est, q_tgt)
 
-        loss = self.loss_fn(q_est, q_tgt)
         self.optimizer.zero_grad()
-        loss.backward()
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(self.net.online.parameters(), self.config.grad_clip_norm)
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         return float(q_est.mean().item()), float(loss.item())
 
     def learn(self) -> tuple[float | None, float | None]:
@@ -327,6 +340,7 @@ class DDQNAgent:
             "online": self.net.online.state_dict(),
             "target": self.net.target.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "scaler": self.scaler.state_dict(),
             "exploration_rate": self.exploration_rate,
             "curr_step": self.curr_step,
         }
@@ -336,5 +350,7 @@ class DDQNAgent:
         self.net.target.load_state_dict(sd["target"])
         if "optimizer" in sd:
             self.optimizer.load_state_dict(sd["optimizer"])
+        if "scaler" in sd:  # tolerant: pre-AMP bundles lack the key
+            self.scaler.load_state_dict(sd["scaler"])
         self.exploration_rate = sd.get("exploration_rate", self.exploration_rate)
         self.curr_step = sd.get("curr_step", 0)
