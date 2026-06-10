@@ -100,7 +100,9 @@ class AtariEnv(EmulatorEnv):
         self.ale.getScreenGrayscale(buf)
 
     def _push_frame(self, frame84: np.ndarray) -> None:
-        self._stack = np.roll(self._stack, 1, axis=0)
+        # in-place reversed shift — np.roll allocated a full stack per push
+        for i in range(self.frame_stack - 1, 0, -1):
+            self._stack[i] = self._stack[i - 1]
         self._stack[0] = frame84
 
     def _step_with_skip(self, ale_action: int) -> tuple[float, bool]:

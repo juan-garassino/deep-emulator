@@ -37,7 +37,11 @@ class FrozenEncoderEnv(EmulatorEnv):
         self.encoder = encoder.eval()
         for p in self.encoder.parameters():
             p.requires_grad = False
-        self.device = device or next(encoder.parameters()).device.type
+        if device is not None:
+            self.encoder = self.encoder.to(device)
+            self.device = device
+        else:
+            self.device = next(encoder.parameters()).device.type
 
         c, _, _ = inner.observation_space.shape
         self.frame_stack = c
@@ -49,23 +53,40 @@ class FrozenEncoderEnv(EmulatorEnv):
             shape=(c * self.latent_dim,),
             dtype=np.dtype(np.float32),
         )
+        # Per-frame latent cache: each step the inner env pushes ONE new frame
+        # (index 0, newest-first) — re-encoding the other frame_stack-1 frames
+        # would recompute latents we already have. Only valid for per-frame
+        # encoders on one-new-frame-per-step inner envs; V-JEPA-style
+        # spatiotemporal encoders must bypass it.
+        self._cache_ok = isinstance(encoder, ViTTiny)
+        self._latents: np.ndarray | None = None  # (frame_stack, latent_dim)
 
-    def _encode(self, pixel_obs: np.ndarray) -> np.ndarray:
-        batch = np.stack(
-            [normalize_to_96x96(pixel_obs[i])[0] for i in range(self.frame_stack)]
-        )  # (frame_stack, 96, 96) uint8
-        x = torch.from_numpy(batch).float().unsqueeze(1).to(self.device) / 255.0  # (FS, 1, 96, 96)
+    def _encode_frames(self, frames: np.ndarray) -> np.ndarray:
+        """(N, H, W) uint8 -> (N, latent_dim) float32."""
+        batch = np.stack([normalize_to_96x96(f)[0] for f in frames])
+        x = torch.from_numpy(batch).float().unsqueeze(1).to(self.device) / 255.0
         with torch.no_grad():
-            z = self.encoder(x)  # (FS, latent_dim)
-        return z.flatten().cpu().numpy().astype(np.float32)
+            z = self.encoder(x)
+        return z.cpu().numpy().astype(np.float32)
+
+    def _encode_full(self, pixel_obs: np.ndarray) -> np.ndarray:
+        self._latents = self._encode_frames(pixel_obs[: self.frame_stack])
+        return self._latents.flatten()
+
+    def _encode_step(self, pixel_obs: np.ndarray) -> np.ndarray:
+        if not self._cache_ok or self._latents is None:
+            return self._encode_full(pixel_obs)
+        newest = self._encode_frames(pixel_obs[:1])  # (1, latent_dim)
+        self._latents = np.concatenate([newest, self._latents[:-1]], axis=0)
+        return self._latents.flatten()
 
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:
         obs, info = self.inner.reset(seed=seed)
-        return self._encode(obs), info
+        return self._encode_full(obs), info
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
         obs, r, term, trunc, info = self.inner.step(action)
-        return self._encode(obs), float(r), bool(term), bool(trunc), info
+        return self._encode_step(obs), float(r), bool(term), bool(trunc), info
 
     def render(self) -> Any:
         return self.inner.render()

@@ -150,12 +150,17 @@ def main(argv: list[str] | None = None) -> int:
 
     encoder_metadata: dict | None = None
     if args.encoder is not None:
+        import torch as _torch
+
         from deepEmulator.encoders.frozen_wrapper import FrozenEncoderEnv, load_frozen_encoder
 
-        encoder, encoder_metadata = load_frozen_encoder(args.encoder)
-        env = FrozenEncoderEnv(env, encoder)
+        # the encoder must live on the SAME device as the agent — the default
+        # CPU placement ran a ViT forward per env step on CPU on GPU pods
+        device = "cuda" if _torch.cuda.is_available() else "cpu"
+        encoder, encoder_metadata = load_frozen_encoder(args.encoder, map_location=device)
+        env = FrozenEncoderEnv(env, encoder, device=device)
         print(
-            f"[deepemu-train] using frozen encoder from {args.encoder} "
+            f"[deepemu-train] using frozen encoder from {args.encoder} on {device} "
             f"(latent_dim={encoder.cfg.out_dim}, obs_shape={env.observation_space.shape})"
         )
 
