@@ -27,8 +27,8 @@ jobs:
 
       - name: Protected files must be untouched
         run: |
-          git fetch origin master --depth 1
-          CHANGED=$(git diff --name-only origin/master...HEAD)
+          git fetch origin main --depth 1
+          CHANGED=$(git diff --name-only origin/main...HEAD)
           echo "$CHANGED"
           BAD=$(echo "$CHANGED" | grep -E '^(scripts/eval_signed\.py|program\.md|entrypoint\.sh|Dockerfile|\.github/)' || true)
           if [ -n "$BAD" ]; then
@@ -39,7 +39,7 @@ jobs:
 
       - name: Commit subjects must follow the iteration format
         run: |
-          git log origin/master..HEAD --pretty=%s | while read -r subject; do
+          git log origin/main..HEAD --pretty=%s | while read -r subject; do
             echo "$subject" | grep -qE '^\[self-improve [0-9]+\]' \
               || { echo "::error::bad commit subject: $subject"; exit 1; }
           done
@@ -70,7 +70,7 @@ jobs:
         if: always()
         run: |
           echo '## Self-improve branch review'
-          git log master..HEAD --oneline | head -50 || true
+          git log main..HEAD --oneline | head -50 || true
           echo
           if [ -f improvement_log.tsv ]; then
             echo '### improvement_log.tsv'
@@ -90,4 +90,4 @@ jobs:
             status: ${{ job.status }}
             commits: ${{ github.event.commits[0].message }}
             [review run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-            [compare to master](${{ github.server_url }}/${{ github.repository }}/compare/master...${{ github.ref_name }})
+            [compare to master](${{ github.server_url }}/${{ github.repository }}/compare/main...${{ github.ref_name }})
