@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 
 from deepEmulator.agents.replay_buffer import ReplayBuffer
+from deepEmulator.utils.device import get_device_str, is_cuda
 
 
 # --- hyperparameters --------------------------------------------------------
@@ -181,7 +182,9 @@ class DDQNAgent:
         self.obs_shape = obs_shape
         self.n_actions = n_actions
         self.config = config or DDQNConfig()
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # device-agnostic: mps -> cuda -> cpu (never hardcode .cuda()). An
+        # explicit `device` arg still wins for tests / forced-CPU eval.
+        self.device = device or get_device_str()
 
         self.net = DDQNNet(obs_shape, n_actions, dueling=self.config.dueling).to(self.device)
         self.optimizer = torch.optim.Adam(
@@ -202,7 +205,9 @@ class DDQNAgent:
         self.eval_epsilon = 0.0  # used by act(explore=False); play/eval set this
         self.curr_step = 0
         self._needs_episode_start = True
-        self._amp_active = bool(self.config.amp) and self.device == "cuda"
+        # AMP GradScaler + fp16 autocast are CUDA-only; on MPS/CPU they stay
+        # off so the same config runs everywhere (the M5 Max path is plain fp32).
+        self._amp_active = bool(self.config.amp) and is_cuda(self.device)
         try:
             # torch >= 2.3 unified API
             self.scaler = torch.amp.GradScaler("cuda", enabled=self._amp_active)
