@@ -83,8 +83,12 @@ Build system is `pyproject.toml` (PEP 621). `setup.py` is legacy and will be rem
 
 ```
 deepEmulator/
-  core/             EmulatorEnv base, CartridgeAdapter ABC, registry, vendored spaces
-  platforms/        gameboy.py (PyBoy), atari.py (ale-py), synthetic.py (SYNTH BLOB —
+  core/             EmulatorEnv base, CartridgeAdapter ABC (the AISettings-style
+                    per-game plugin: RAM reward + action set + game state),
+                    combo_action_set() (multi-button action-space generator),
+                    registry, reward.py (PhasedReward), vendored spaces
+  platforms/        gameboy.py (PyBoy; single-button step() + step_buttons() combo
+                    multi-press with stale-release), atari.py (ale-py), synthetic.py (SYNTH BLOB —
                     ROM-free bouncing-blob env for tests + vec smokes), sega.py (planned)
   cartridges/       pokemon_red, pokemon_crystal, pokemon_coral, generic_gb, atari/pong.
                     __init__.py exposes load_all() — the ONLY way CLIs populate the
@@ -105,7 +109,9 @@ deepEmulator/
                     eval.py (head-to-head HTML report + k-NN retrieval grid)
   inference/        play.py (visible PyBoy + live arrows + live attention overlay)
   visualization/    arrows.py (offline flow viz), attention.py (rollout + GIF)
-  utils/            logger (TSV+plots), checkpoints (portable bundle + latest.txt)
+  utils/            logger (TSV+plots), checkpoints (portable bundle + latest.txt),
+                    device.py — get_device()/get_device_str() (mps → cuda → cpu;
+                    the SINGLE source of device selection — never hardcode .cuda())
 notebooks/          01_colab_train  02_local_inference  03_visualize_arrows
                     04_pretrain_dino_colab  05_frozen_encoder_ddqn  06_visualize_attention
                     + legacy_vizdoom_dqn.py (legacy reference)
@@ -221,6 +227,17 @@ Post-audit semantics (2026-06-10 fix round):
 - **`is_done`: party wipe is a true terminal** (`faint_terminal=True` default, party≥1 and hp_fraction 0); everything else is env truncation.
 - **GB action set default is 6 buttons** — `start` is opt-in via `include_start=True` / `deepemu-train --include-start` (menu spam burned ~1/7 of exploration). Old 7-action bundles keep working: play/eval rebuild the adapter from the bundle's recorded `action_set`.
 - **`PyBoyEnv(reward_clip=5.0)`** clamps per-step reward (CLI `--reward-clip`, ≤0 disables).
+
+## PyBoy-RL plugin surface (AISettings-style) + device selection
+
+Ported from `lixado/PyBoy-RL` (see `003-knowledge-playgrounds/references/analysis/music-rl-games.md`, PyBoy-RL section). The repo already carried the game-agnostic plugin shape (`CartridgeAdapter` = AISettings interface, `PyBoyEnv` = gym wrapper, `DDQNAgent` = DDQN baseline); this port closed the two remaining gaps.
+
+- **Multi-button combo actions.** `deepEmulator/core/cartridge.combo_action_set(buttons, max_buttons=2, include_noop=False)` builds a permutation-generated action space where each action is a *list* of PyBoy button names, with contradictory d-pad pairs (`left+right`, `up+down`) removed — the PyBoy-RL `MarioAISettings.GetActions` pattern. `PyBoyEnv.step_buttons(action)` presses a combo simultaneously (stale-release then multi-press, mirroring `CustomPyBoyGym.step`), so "hold A while running right" registers as one action instead of two serial presses. `action` is either a button-name list or an index into a combo `action_set`. The original single-button `step(int)` is unchanged — combos are strictly additive.
+- **Device-agnostic torch.** `deepEmulator/utils/device.get_device()` / `get_device_str()` are the SINGLE source of device selection: **`mps → cuda → cpu`**. Juan trains on an M-series Mac (MPS) locally and RTX/RunPod (CUDA) remotely — **never hardcode `.cuda()`**. `DDQNAgent`, `training/train.py`, and `training/eval.py` all route through it. `is_cuda(device)` guards the CUDA-only fast paths (AMP `GradScaler` + fp16 autocast stay no-ops on MPS/CPU — the M-series path is plain fp32). An explicit `device=` arg (tests, forced-CPU eval) still wins; `prefer=` honors a backend only when it's actually usable.
+
+Tests (logic/shape only, no real emulator training, all CPU-runnable): `tests/test_device.py` (preference chain + DDQN forward pass on the selected device), `tests/test_multibutton.py` (combo generation + stubbed multi-press step contract), `tests/test_reward_shaping_mock_ram.py` (RAM-address reward reads against a mock `pyboy.memory` dict).
+
+> **NEEDS-MPS/GPU-VALIDATION.** These are shape/logic tests on CPU only — they do NOT run a real PyBoy episode, a real MPS/CUDA training step, or a combo action against a live ROM. Before trusting on hardware: (1) run the suite on the M5 Max so `get_device()` actually resolves to `mps` and a DDQN forward/backward step runs on Metal (this x86 CI host has `mps_built=True` but `mps_available=False`); (2) run a short `deepemu-train` on a real ROM using `step_buttons`/`combo_action_set` to confirm combos press together in the emulator; (3) sanity-check AMP stays off on MPS (`_amp_active is False`) and on for a CUDA pod. See the PR's *MPS-or-RunPod validation checklist*.
 
 ## Honest project status
 

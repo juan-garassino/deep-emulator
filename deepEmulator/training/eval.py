@@ -53,11 +53,11 @@ def make_env(
         adapter.action_set = list(action_set)
     env = PyBoyEnv(adapter, rom_path=rom, init_state=init_state, headless=headless, max_steps=max_steps)
     if encoder_path is not None:
-        import torch as _torch
-
         from deepEmulator.encoders.frozen_wrapper import FrozenEncoderEnv, load_frozen_encoder
+        from deepEmulator.utils.device import get_device_str
 
-        device = "cuda" if _torch.cuda.is_available() else "cpu"
+        # device-agnostic: mps -> cuda -> cpu
+        device = get_device_str()
         encoder, _ = load_frozen_encoder(encoder_path, map_location=device)
         env = FrozenEncoderEnv(env, encoder, device=device)
     return env

@@ -102,6 +102,11 @@ class PyBoyEnv(EmulatorEnv):
         )
         self._step_count = 0
         self._prev_state: dict = {}
+        # buttons currently held down (multi-button combo support). Ported from
+        # lixado/PyBoy-RL CustomPyBoyGym.step(): a combo action releases the
+        # buttons no longer wanted and presses the new ones, so "hold A while
+        # running right" works. Empty until step_buttons() is used.
+        self._held: set[str] = set()
 
     # --- helpers ------------------------------------------------------------
     def _grab_frame(self) -> np.ndarray:
@@ -131,6 +136,43 @@ class PyBoyEnv(EmulatorEnv):
         self.pyboy.tick(self.action_freq - self.press_ticks - 1, render)
         self.pyboy.tick(1, True)  # final tick always renders for observation
 
+    def _resolve_buttons(self, action: int | list[str]) -> list[str]:
+        """Map an action to a list of button names.
+
+        Accepts either a combo list directly, or an index into a cartridge
+        `action_set` whose entries are themselves lists (built with
+        `combo_action_set`). A bare string index into a single-button action
+        set is wrapped to a 1-element list.
+        """
+        if isinstance(action, (list, tuple)):
+            return list(action)
+        entry = self.cartridge.action_set[action]
+        return list(entry) if isinstance(entry, (list, tuple)) else [entry]
+
+    def _send_buttons(self, buttons: list[str]) -> None:
+        """Press a set of buttons simultaneously for one env step.
+
+        Releases held buttons that are no longer wanted, presses the newly
+        requested ones, ticks for the press window, then releases everything
+        pressed this step. Mirrors PyBoy-RL's CustomPyBoyGym.step() semantics
+        (stale-release + multi-press) so combos like ["right", "a"] register
+        together instead of as two serial single presses.
+        """
+        render = not self.headless
+        wanted = set(buttons)
+        # release buttons no longer wanted before pressing the new combo
+        for stale in self._held - wanted:
+            self.pyboy.button_release(stale)
+        for btn in buttons:
+            self.pyboy.button_press(btn)
+        self._held = wanted
+        self.pyboy.tick(self.press_ticks, render)
+        for btn in buttons:
+            self.pyboy.button_release(btn)
+        self._held = set()
+        self.pyboy.tick(self.action_freq - self.press_ticks - 1, render)
+        self.pyboy.tick(1, True)
+
     # --- EmulatorEnv API ----------------------------------------------------
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:
         # `seed` accepted for Env-protocol compatibility but unused: PyBoy is
@@ -155,6 +197,35 @@ class PyBoyEnv(EmulatorEnv):
 
     def step(self, action: int | None) -> tuple[np.ndarray, float, bool, bool, dict]:
         self._send_action(action)
+        curr_state = self.cartridge.read_game_state(self.pyboy)
+        reward = self.cartridge.compute_reward(self._prev_state, curr_state, self.pyboy)
+        if self.reward_clip is not None:
+            reward = max(-self.reward_clip, min(self.reward_clip, reward))
+        self._push_frame(self._grab_frame())
+
+        self._step_count += 1
+        terminated = self.cartridge.is_done(curr_state)
+        truncated = self._step_count >= self.max_steps
+        self._prev_state = curr_state
+
+        info = {
+            "game_state": curr_state,
+            "trajectory": self.cartridge.get_trajectory_coords(curr_state),
+        }
+        return self._screen_stack.copy(), float(reward), terminated, truncated, info
+
+    def step_buttons(
+        self, action: int | list[str]
+    ) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """Multi-button step — same (obs, reward, terminated, truncated, info)
+        contract as `step()`, but presses a *combo* of buttons simultaneously.
+
+        `action` is either a list of PyBoy button names (["right", "a"]) or an
+        index into a combo `action_set` (see `combo_action_set`). This is the
+        lixado/PyBoy-RL capability: solve "hold A while running right" without
+        splitting it into two serial presses.
+        """
+        self._send_buttons(self._resolve_buttons(action))
         curr_state = self.cartridge.read_game_state(self.pyboy)
         reward = self.cartridge.compute_reward(self._prev_state, curr_state, self.pyboy)
         if self.reward_clip is not None:
