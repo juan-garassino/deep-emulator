@@ -23,6 +23,7 @@ from deepEmulator.core.registry import register
 
 @dataclass
 class PokemonCoralAdapter(PokemonCrystalAdapter):
+    """Pokemon Coral: `PokemonCrystalAdapter` registered under the title "POKEMON CORAL" (same RAM map and rewards)."""
     cartridge_title: str = "POKEMON CORAL"
 
 

@@ -20,6 +20,12 @@ from deepEmulator.utils.device import get_device_str, is_cuda
 # --- hyperparameters --------------------------------------------------------
 @dataclass
 class DDQNConfig:
+    """Hyperparameters for `DDQNAgent`.
+
+    Field defaults are documented inline; `deque_size` is the replay capacity in
+    transitions, and `exploration_anneal_steps` (when set) overrides the
+    multiplicative `exploration_rate_decay`.
+    """
     exploration_rate: float = 1.0
     # multiplicative decay is the fallback when exploration_anneal_steps is None.
     # NOTE: 0.99999975 needs ~12M act() calls to reach the floor — for budgeted
@@ -167,11 +173,31 @@ class DDQNNet(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, mode: str = "online") -> torch.Tensor:
+        """Run the online or target network.
+
+        Args:
+            x: float tensor, `(B, C, H, W)` for pixel observations or `(B, D)` for latents.
+            mode: `"online"` or `"target"` (any other value selects the target net).
+
+        Returns:
+            Q-values, float tensor of shape `(B, n_actions)`.
+        """
         return (self.online if mode == "online" else self.target)(x)
 
 
 # --- agent ------------------------------------------------------------------
 class DDQNAgent:
+    """Double-DQN agent with a target network, ring replay buffer and epsilon-greedy policy.
+
+    Observation rank selects the network: rank-3 `(frame_stack, H, W)` uint8 pixels
+    use the CNN, rank-1 `(D,)` latents use the MLP (see `DDQNNet`).
+
+    Args:
+        obs_shape: shape of a single observation.
+        n_actions: size of the discrete action space.
+        config: hyperparameters; defaults to `DDQNConfig()`.
+        device: torch device string; defaults to `get_device_str()` (mps, cuda, cpu).
+    """
     def __init__(
         self,
         obs_shape: tuple[int, ...],
@@ -229,6 +255,16 @@ class DDQNAgent:
             return int(torch.argmax(q, dim=1).item())
 
     def act(self, state: np.ndarray, explore: bool = True) -> int:
+        """Choose an action for one observation.
+
+        Args:
+            state: observation array matching `obs_shape`.
+            explore: if True, epsilon-greedy with the training schedule (advances
+                `curr_step` and the epsilon); if False, greedy except for `eval_epsilon`.
+
+        Returns:
+            Action index in `[0, n_actions)`.
+        """
         if not explore:
             # eval/play mode: fixed eval_epsilon, no decay, no step counting
             if self.eval_epsilon > 0.0 and random.random() < self.eval_epsilon:
@@ -300,6 +336,7 @@ class DDQNAgent:
 
     # --- learning --------------------------------------------------------
     def sync_target(self) -> None:
+        """Copy the online network weights into the target network."""
         self.net.target.load_state_dict(self.net.online.state_dict())
 
     def train_step(self) -> tuple[float, float]:
@@ -326,6 +363,15 @@ class DDQNAgent:
         return float(q_est.mean().item()), float(loss.item())
 
     def learn(self) -> tuple[float | None, float | None]:
+        """Run a gradient step if the schedule allows it.
+
+        Syncs the target network every `sync_every` steps, then trains only when the
+        buffer holds at least `max(burnin, batch_size)` transitions and `curr_step`
+        is a multiple of `learn_every`.
+
+        Returns:
+            `(mean_q, loss)` as floats, or `(None, None)` when no step was taken.
+        """
         if self.curr_step % self.config.sync_every == 0:
             self.sync_target()
 
@@ -341,6 +387,7 @@ class DDQNAgent:
 
     # --- persistence -----------------------------------------------------
     def state_dict(self) -> dict:
+        """Return online/target weights, optimizer, scaler, epsilon and `curr_step` for `torch.save`."""
         return {
             "online": self.net.online.state_dict(),
             "target": self.net.target.state_dict(),
@@ -351,6 +398,11 @@ class DDQNAgent:
         }
 
     def load_state_dict(self, sd: dict) -> None:
+        """Restore a dict produced by `state_dict`.
+
+        The replay buffer is not part of the checkpoint and starts empty.
+        `optimizer` and `scaler` keys are optional so older bundles still load.
+        """
         self.net.online.load_state_dict(sd["online"])
         self.net.target.load_state_dict(sd["target"])
         if "optimizer" in sd:

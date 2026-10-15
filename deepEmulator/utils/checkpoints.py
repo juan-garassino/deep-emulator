@@ -50,6 +50,13 @@ def write_bundle(
     extra: dict | None = None,
     update_latest: bool = True,
 ) -> Path:
+    """Write a portable run bundle and return `run_dir`.
+
+    Creates `model.pt` (`torch.save` of `agent_state`), `metadata.json` (cartridge,
+    platform, action set, observation shape, algo, library versions, plus `extra`)
+    and empty `trajectories/` and `plots/` directories. When `update_latest` is
+    set, writes the run-directory name into `<run_dir.parent>/latest.txt`.
+    """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "trajectories").mkdir(exist_ok=True)
@@ -80,6 +87,11 @@ def write_bundle(
 
 
 def load_bundle(run_dir: Path | str, map_location: str = "cpu") -> tuple[dict, dict]:
+    """Load `(agent_state, metadata)` from a bundle directory.
+
+    If `run_dir` has no `metadata.json`, it is treated as a parent directory and
+    resolved through `latest.txt`. Raises `FileNotFoundError` when neither works.
+    """
     run_dir = Path(run_dir)
     if not (run_dir / "metadata.json").exists():
         # Caller may have passed the parent dir (e.g. checkpoints/pokemon_red);
@@ -144,6 +156,7 @@ class TrajectoryWriter:
         self._episode = -1
 
     def start_episode(self, episode: int) -> None:
+        """Close any open file and start `episode_<episode>.csv.gz` with a header row."""
         self.close()
         self._episode = episode
         path = self.run_dir / f"episode_{episode:06d}.csv.gz"
@@ -152,11 +165,13 @@ class TrajectoryWriter:
         self._writer.writerow(["step", "x", "y", "map_id", "action", "reward"])
 
     def write(self, step: int, x: int, y: int, map_id: int, action: int, reward: float) -> None:
+        """Append one row; silently ignored if no episode is open."""
         if self._writer is None:
             return
         self._writer.writerow([step, x, y, map_id, action, f"{reward:.6f}"])
 
     def close(self) -> None:
+        """Close the current episode file, if any."""
         if self._fp is not None:
             self._fp.close()
             self._fp = None

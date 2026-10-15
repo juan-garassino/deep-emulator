@@ -9,6 +9,10 @@ _REGISTRY: dict[str, Type[CartridgeAdapter]] = {}
 
 
 def register(cartridge_title: str):
+    """Class decorator registering an adapter under `cartridge_title`.
+
+    Re-registering a title replaces the previous class.
+    """
     def deco(cls: Type[CartridgeAdapter]):
         _REGISTRY[cartridge_title] = cls
         return cls
@@ -16,10 +20,12 @@ def register(cartridge_title: str):
 
 
 def get(cartridge_title: str) -> Type[CartridgeAdapter]:
+    """Return the adapter class for `cartridge_title`; raise `KeyError` listing the registered titles if absent."""
     if cartridge_title not in _REGISTRY:
         raise KeyError(f"no cartridge registered for {cartridge_title!r}; have {list(_REGISTRY)}")
     return _REGISTRY[cartridge_title]
 
 
 def available() -> list[str]:
+    """Return the sorted list of registered cartridge titles."""
     return sorted(_REGISTRY)

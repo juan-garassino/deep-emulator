@@ -21,6 +21,14 @@ def run_in_colab(
     drive_prefix: str = "deepEmulator",
     resume: bool = True,
 ) -> int:
+    """Run DINO pretraining from a Colab cell, mounting Drive when running in Colab.
+
+    Relative `corpus` / `run_dir` paths resolve under Drive; encoder bundles go to
+    `<drive>/<drive_prefix>/encoders`. Forwards to `pretrain_dino.main`.
+
+    Returns:
+        The exit code of `pretrain_dino.main`.
+    """
     from deepEmulator.training.pretrain_dino import main
 
     drive_root: Path | None = None

@@ -40,6 +40,7 @@ def sync(runs_root: Path | str, prefix_uri: str) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI: `sync_runs <runs_root> <prefix_uri>`. Returns non-zero if any directory failed to sync."""
     p = argparse.ArgumentParser(prog="sync_runs")
     p.add_argument("runs_root", type=Path)
     p.add_argument("prefix_uri")

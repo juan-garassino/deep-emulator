@@ -27,6 +27,16 @@ def _get_1d_sincos_pos_embed(embed_dim: int, pos: np.ndarray) -> np.ndarray:
 
 
 def get_2d_sincos_pos_embed(embed_dim: int, grid_size: int, cls_token: bool = True) -> np.ndarray:
+    """Build a fixed 2D sine-cosine positional embedding.
+
+    Args:
+        embed_dim: embedding width (must be divisible by 4).
+        grid_size: patches per side.
+        cls_token: prepend an all-zero row for the CLS token.
+
+    Returns:
+        float32 array `(grid_size**2 [+ 1], embed_dim)`.
+    """
     gh = np.arange(grid_size, dtype=np.float32)
     gw = np.arange(grid_size, dtype=np.float32)
     grid = np.stack(np.meshgrid(gw, gh), axis=0)  # (2, H, W)
@@ -40,11 +50,13 @@ def get_2d_sincos_pos_embed(embed_dim: int, grid_size: int, cls_token: bool = Tr
 
 # --- building blocks --------------------------------------------------------
 class PatchEmbed(nn.Module):
+    """Non-overlapping patch embedding via a strided conv: `(B, C, H, W) -> (B, N, D)`."""
     def __init__(self, in_chans: int, embed_dim: int, patch_size: int):
         super().__init__()
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Embed an image batch `(B, in_chans, H, W)` into tokens `(B, N, embed_dim)`."""
         x = self.proj(x)  # (B, D, H', W')
         return x.flatten(2).transpose(1, 2)  # (B, N, D)
 
@@ -63,6 +75,7 @@ class Attention(nn.Module):
         self.last_attn: torch.Tensor | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Self-attention over tokens `(B, N, D)`; returns `(B, N, D)` and stashes `last_attn` `(B, heads, N, N)` when not in training mode."""
         B, N, D = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]  # (B, heads, N, head_dim)
@@ -78,6 +91,7 @@ class Attention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
+    """Pre-norm transformer block: attention then MLP, each with a residual connection."""
     def __init__(self, dim: int, num_heads: int, mlp_ratio: float = 4.0):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
@@ -91,6 +105,7 @@ class TransformerBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the block to tokens `(B, N, D)`; returns the same shape."""
         x = x + self.attn(self.norm1(x))
         x = x + self.mlp(self.norm2(x))
         return x
@@ -99,6 +114,7 @@ class TransformerBlock(nn.Module):
 # --- the model --------------------------------------------------------------
 @dataclass
 class ViTConfig:
+    """ViT-tiny hyperparameters (96x96 single-channel input, 4-pixel patches, 12 layers, 192-dim, 256-dim output latent by default)."""
     image_size: int = 96
     in_chans: int = 1
     patch_size: int = 4
@@ -122,7 +138,7 @@ class ViTTiny(nn.Module):
         super().__init__()
         self.cfg = cfg or ViTConfig()
         c = self.cfg
-        assert c.image_size % c.patch_size == 0, "image_size must divide patch_size"
+        assert c.image_size % c.patch_size == 0, "patch_size must divide image_size"
         self.grid_size = c.image_size // c.patch_size
         self.num_patches = self.grid_size**2
 
@@ -165,6 +181,7 @@ class ViTTiny(nn.Module):
         return x[:, 0], x[:, 1:]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode frames `(B, in_chans, image_size, image_size)` to latents `(B, out_dim)`."""
         cls, _ = self.forward_tokens(x)
         return self.head(cls)
 
@@ -173,4 +190,5 @@ class ViTTiny(nn.Module):
         return [blk.attn.last_attn for blk in self.blocks if blk.attn.last_attn is not None]
 
     def num_parameters(self) -> int:
+        """Number of trainable parameters."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

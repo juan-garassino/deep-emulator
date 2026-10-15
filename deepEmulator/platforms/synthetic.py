@@ -62,6 +62,7 @@ class SyntheticEmulatorEnv(EmulatorEnv):
         self._stack[0] = frame
 
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:
+        """Reset the bouncing blob and return `(obs, info)`; `obs` is `(3, 72, 80)` uint8. `seed` reseeds the RNG."""
         if seed is not None:
             self._rng = np.random.default_rng(seed)
         self._reset_state()
@@ -72,6 +73,12 @@ class SyntheticEmulatorEnv(EmulatorEnv):
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
         # Action 0=noop, 1=left, 2=right, 3=up, 4=down, 5/6=ignored
+        """Accelerate the blob by `action` (1/2 = left/right, 3/4 = up/down, others no-op) and advance it.
+
+        Returns:
+            `(obs, reward, terminated, truncated, info)` where `reward = 0.1 * vx`, `terminated` is
+            always False and `truncated` is True after `episode_length` steps.
+        """
         dvx = {1: -1, 2: 1}.get(action, 0)
         dvy = {3: -1, 4: 1}.get(action, 0)
         self.vx = int(np.clip(self.vx + dvx, -3, 3))
@@ -101,29 +108,36 @@ class SyntheticEmulatorEnv(EmulatorEnv):
         )
 
     def render(self) -> np.ndarray:
+        """Return the full-resolution colour frame."""
         return self._render_frame_color()
 
     def close(self) -> None:
+        """No resources to release."""
         pass
 
 
 @dataclass
 class SyntheticCartridge(CartridgeAdapter):
+    """ROM-free adapter paired with `SyntheticEmulatorEnv`: constant state, zero reward, never done."""
     cartridge_title: str = "SYNTH BLOB"
     platform: str = "gameboy"
     action_set: list = field(default_factory=lambda: list(range(7)))
     observation_shape: tuple = (3, 72, 80)
 
     def reset_episode(self, emulator) -> None:
+        """No per-episode state to reset."""
         pass
 
     def read_game_state(self, emulator) -> dict:
+        """Return the constant `{"x": 0, "y": 0, "map_id": 0}`."""
         return {"x": 0, "y": 0, "map_id": 0}
 
     def compute_reward(self, prev_state, curr_state, emulator) -> float:
+        """Always 0.0 (the env supplies its own reward)."""
         return 0.0
 
     def is_done(self, state: dict) -> bool:
+        """Always False."""
         return False
 
 

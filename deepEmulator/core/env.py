@@ -24,13 +24,17 @@ class EmulatorEnv:
         self.cartridge = cartridge
 
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:  # pragma: no cover - P0 stub
+        """Reset the emulator and return `(observation, info)`. Subclasses must override."""
         raise NotImplementedError
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:  # pragma: no cover - P0 stub
+        """Apply `action`; return `(obs, reward, terminated, truncated, info)`. Subclasses must override."""
         raise NotImplementedError
 
     def render(self) -> Any:  # pragma: no cover - P0 stub
+        """Return a renderable frame. Subclasses must override."""
         raise NotImplementedError
 
     def close(self) -> None:  # pragma: no cover - P0 stub
+        """Release emulator resources. The base implementation does nothing."""
         pass

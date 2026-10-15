@@ -47,6 +47,7 @@ class MetricLogger:
         self._t_last = self._t0
 
     def log_step(self, reward: float, loss: float | None, q: float | None) -> None:
+        """Accumulate one step's reward, and loss / Q-value when not None, into the current episode."""
         self._cur_reward += reward
         self._cur_length += 1
         if loss is not None:
@@ -55,6 +56,7 @@ class MetricLogger:
             self._cur_qs.append(q)
 
     def end_episode(self, *, episode: int, step: int, epsilon: float) -> dict:
+        """Close the current episode, append a TSV row of running means, and return that row as a dict."""
         self._ep_rewards.append(self._cur_reward)
         self._ep_lengths.append(self._cur_length)
         self._ep_losses.append(

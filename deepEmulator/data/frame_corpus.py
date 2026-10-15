@@ -101,17 +101,20 @@ class FrameRing:
         return len(self._buf)
 
     def push(self, frame_norm: np.ndarray) -> None:
+        """Append one normalized frame, shape `(1, 96, 96)`, stored as uint8; the oldest frame is dropped when full. Raises `ValueError` on a shape mismatch."""
         if frame_norm.shape != (1, 96, 96):
             raise ValueError(f"expected (1, 96, 96), got {frame_norm.shape}")
         self._buf.append(frame_norm.astype(np.uint8, copy=False))
 
     def sample(self, batch_size: int) -> np.ndarray:
+        """Sample `batch_size` frames uniformly with replacement; returns `(batch_size, 1, 96, 96)` uint8. Raises `RuntimeError` if the ring is empty."""
         if len(self._buf) == 0:
             raise RuntimeError("ring is empty")
         idx = self._rng.integers(0, len(self._buf), size=batch_size)
         return np.stack([self._buf[int(i)] for i in idx])
 
     def iter_batches(self, batch_size: int, n_batches: int) -> Iterator[np.ndarray]:
+        """Yield `n_batches` independent samples of size `batch_size` (see `sample`)."""
         for _ in range(n_batches):
             yield self.sample(batch_size)
 
@@ -144,6 +147,7 @@ class FrameStorage:
 
     @property
     def preprocessing(self) -> str | None:
+        """Preprocessing tag recorded in the corpus index, or None for corpora written before the tag existed."""
         return self._index.get("preprocessing")
 
     def _save_index(self) -> None:
@@ -151,9 +155,11 @@ class FrameStorage:
 
     @property
     def total_frames(self) -> int:
+        """Number of frames stored, including those still buffered in memory."""
         return self._index["total_frames"] + len(self._buffer)
 
     def push(self, frame_norm: np.ndarray) -> None:
+        """Buffer one `(1, 96, 96)` frame (cast to uint8); flushes a chunk to disk every `chunk_size` frames."""
         if frame_norm.shape != (1, 96, 96):
             raise ValueError(f"expected (1, 96, 96), got {frame_norm.shape}")
         self._buffer.append(frame_norm.astype(np.uint8, copy=False))
@@ -161,6 +167,7 @@ class FrameStorage:
             self.flush()
 
     def flush(self) -> None:
+        """Write buffered frames as a compressed `chunk_XXXXXX.npz` and update `index.json`. No-op if the buffer is empty."""
         if not self._buffer:
             return
         idx = len(self._index["chunks"])
@@ -173,6 +180,7 @@ class FrameStorage:
         self._buffer = []
 
     def iter_chunks(self) -> Iterator[np.ndarray]:
+        """Yield each on-disk chunk as a `(n, 1, 96, 96)` uint8 array (in-memory buffered frames are not included)."""
         for name in self._index["chunks"]:
             data = np.load(self.root / name)
             yield data["frames"]
@@ -290,6 +298,7 @@ class FrameCollector:
         return i
 
     def run(self, n_frames: int) -> int:
+        """Collect `n_frames` frames by calling `step()` that many times; returns `n_frames`."""
         for _ in range(n_frames):
             self.step()
         return n_frames

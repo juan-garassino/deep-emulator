@@ -15,6 +15,7 @@ IMPLEMENTED = False
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Placeholder CLI: print a "not implemented" message to stderr and return exit code 2."""
     print(
         "[pretrain-vjepa] V-JEPA is Phase 1 — not implemented yet. "
         "Use deepemu-pretrain-dino / MODE=pretrain_dino instead.",

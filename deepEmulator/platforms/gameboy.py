@@ -176,6 +176,7 @@ class PyBoyEnv(EmulatorEnv):
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:
         # `seed` accepted for Env-protocol compatibility but unused: PyBoy is
         # deterministic from a loaded state.
+        """Reset the game (loading `init_state` if given) and return `(obs, info)`; `obs` is the stacked-frame array of shape `(frame_stack, 72, 80)`, dtype uint8. `seed` is accepted for protocol compatibility and ignored."""
         if self.init_state is not None:
             with open(self.init_state, "rb") as f:
                 self.pyboy.load_state(f)
@@ -195,6 +196,12 @@ class PyBoyEnv(EmulatorEnv):
         return self._screen_stack.copy(), {"game_state": self._prev_state}
 
     def step(self, action: int | None) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """Press one button (index into `cartridge.action_set`, or None for no press) and advance the emulator.
+
+        Returns:
+            `(obs, reward, terminated, truncated, info)`; `obs` is `(frame_stack, 72, 80)` uint8,
+            `reward` is clipped to `+-reward_clip` when set, `truncated` is True once `max_steps` is reached.
+        """
         self._send_action(action)
         curr_state = self.cartridge.read_game_state(self.pyboy)
         reward = self.cartridge.compute_reward(self._prev_state, curr_state, self.pyboy)
@@ -243,7 +250,9 @@ class PyBoyEnv(EmulatorEnv):
         return self._screen_stack.copy(), float(reward), terminated, truncated, info
 
     def render(self) -> np.ndarray:
+        """Return a copy of the current emulator screen as an RGB(A) array."""
         return self.pyboy.screen.ndarray.copy()
 
     def close(self) -> None:
+        """Stop PyBoy without saving state."""
         self.pyboy.stop(save=False)

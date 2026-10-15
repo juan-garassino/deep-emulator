@@ -64,6 +64,7 @@ def load_trajectory_dir(traj_dir: Path | str) -> np.ndarray:
 
 
 def load_trajectory_csv(csv_path: Path | str) -> np.ndarray:
+    """Read a trajectory CSV (optionally `.csv.gz`) and return an int32 array of shape `(n_steps, 3)` with columns `(x, y, map_id)`."""
     csv_path = Path(csv_path)
     opener = gzip.open if csv_path.suffix == ".gz" else open
     coords: list[tuple[int, int, int]] = []
@@ -201,6 +202,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: parse `argv` (default `sys.argv[1:]`) and return the process exit code."""
     args = _parse_args(argv)
     local_to_global = _resolve_local_to_global(args.cartridge)
     if args.trajectories is not None:

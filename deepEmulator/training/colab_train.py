@@ -111,6 +111,7 @@ def _print_gpu() -> None:
 
 
 def main():  # CLI shim, mirrors train.main but with Colab path resolution
+    """CLI shim around `run_in_colab` (parses `sys.argv`); returns its result."""
     import argparse
 
     p = argparse.ArgumentParser(prog="deepemu-colab-train")

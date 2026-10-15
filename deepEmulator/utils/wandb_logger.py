@@ -47,6 +47,7 @@ class WandbLogger:
             self._run = None
 
     def log(self, data: dict, step: int | None = None) -> None:
+        """Log `data` to wandb; a no-op when disabled, and errors are swallowed."""
         if self._run is None:
             return
         try:
@@ -55,6 +56,7 @@ class WandbLogger:
             pass
 
     def finish(self) -> None:
+        """Finish the wandb run (errors swallowed) and disable the logger."""
         if self._run is None:
             return
         try:

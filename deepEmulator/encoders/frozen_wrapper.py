@@ -80,17 +80,21 @@ class FrozenEncoderEnv(EmulatorEnv):
         return self._latents.flatten()
 
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:
+        """Reset the inner env and return `(latent_obs, info)`; `latent_obs` is float32 of shape `(frame_stack * latent_dim,)`."""
         obs, info = self.inner.reset(seed=seed)
         return self._encode_full(obs), info
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """Step the inner env and return `(latent_obs, reward, terminated, truncated, info)`; `latent_obs` is float32 `(frame_stack * latent_dim,)`."""
         obs, r, term, trunc, info = self.inner.step(action)
         return self._encode_step(obs), float(r), bool(term), bool(trunc), info
 
     def render(self) -> Any:
+        """Delegate to the inner env."""
         return self.inner.render()
 
     def close(self) -> None:
+        """Close the inner env."""
         self.inner.close()
 
 

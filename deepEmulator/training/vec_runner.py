@@ -144,6 +144,7 @@ def _worker(conn, spec: EnvSpec, worker_id: int, base_seed: int) -> None:
 
 @dataclass
 class StepBatch:
+    """Result of one `VecEnvRunner.step`: stacked observations, rewards and flags for all `N` envs."""
     obs: np.ndarray  # (N, *obs_shape) — post-auto-reset for finished envs
     rewards: np.ndarray  # (N,)
     terminated: np.ndarray  # (N,) bool
@@ -183,6 +184,7 @@ class VecEnvRunner:
         return msg
 
     def reset(self, base_seed: int = 0) -> np.ndarray:
+        """Reset every env (worker `i` seeded with `base_seed + i`); returns stacked observations `(N, *obs_shape)`."""
         for i, conn in enumerate(self._conns):
             conn.send(("reset", base_seed + i))
         obs = []
@@ -192,6 +194,7 @@ class VecEnvRunner:
         return np.stack(obs)
 
     def step(self, actions: np.ndarray) -> StepBatch:
+        """Send one action per env, wait for all workers, and return a `StepBatch`. Envs that finished are auto-reset in their worker."""
         for conn, a in zip(self._conns, actions):
             conn.send(("step", int(a)))
         obs_out, rewards, terms, truncs, infos, pre_reset = [], [], [], [], [], []
@@ -218,6 +221,7 @@ class VecEnvRunner:
         )
 
     def close(self) -> None:
+        """Ask workers to exit, join them (terminating stragglers) and close the pipes. Safe to call more than once."""
         if self._closed:
             return
         self._closed = True

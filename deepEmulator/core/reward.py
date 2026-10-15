@@ -68,6 +68,12 @@ class PhasedReward:
     strict: bool = False
 
     def compute(self, prev_state: dict, curr_state: dict, emulator: Any) -> float:
+        """Return the reward from the first active phase.
+
+        Exceptions in a phase predicate or reward function are logged and treated
+        as inactive / 0.0 unless `strict` is True, in which case they are re-raised.
+        Returns 0.0 when no phase is active.
+        """
         for phase in self.phases:
             try:
                 active = bool(phase.is_active(curr_state, emulator))
@@ -89,10 +95,12 @@ class PhasedReward:
         return 0.0
 
     def add(self, phase: RewardPhase) -> "PhasedReward":
+        """Append `phase` (lowest priority so far) and return `self` for chaining."""
         self.phases.append(phase)
         return self
 
     def phase_names(self) -> list[str]:
+        """Return the phase names in priority order."""
         return [p.name for p in self.phases]
 
 

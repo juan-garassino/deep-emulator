@@ -127,6 +127,7 @@ class AtariEnv(EmulatorEnv):
 
     # --- EmulatorEnv API -----------------------------------------------------
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:
+        """Reset the ALE game, apply a random number of NOOPs (up to `noop_max`), and return `(obs, info)`; `obs` is `(frame_stack, 84, 84)` uint8. `seed` reseeds the NOOP RNG."""
         if seed is not None:
             self._rng = random.Random(seed)
         self.ale.reset_game()
@@ -147,6 +148,11 @@ class AtariEnv(EmulatorEnv):
         return self._stack.copy(), {"game_state": self._prev_state, "lives": self._lives}
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """Apply the action at index `action` of the ALE minimal action set (with frame skip).
+
+        Returns:
+            `(obs, reward, terminated, truncated, info)`; `obs` is `(frame_stack, 84, 84)` uint8.
+        """
         ale_action = self._minimal_actions[int(action)]
         raw_reward, terminated = self._step_with_skip(ale_action)
 
@@ -177,11 +183,13 @@ class AtariEnv(EmulatorEnv):
         return self._stack.copy(), float(reward), bool(terminated or adapter_done), truncated, info
 
     def render(self) -> np.ndarray:
+        """Return the current screen as an `(H, W, 3)` uint8 RGB array."""
         buf = np.zeros((self._raw_h, self._raw_w, 3), dtype=np.uint8)
         self.ale.getScreenRGB(buf)
         return buf
 
     def close(self) -> None:
+        """Drop the ALE interface."""
         try:
             del self.ale
         except Exception:
