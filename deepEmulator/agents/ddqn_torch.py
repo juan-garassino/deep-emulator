@@ -309,13 +309,22 @@ class DDQNAgent:
         return actions
 
     # --- replay buffer ---------------------------------------------------
-    def cache(self, state, next_state, action, reward, done, truncated: bool = False) -> None:
+    def cache(
+        self,
+        state: np.ndarray,
+        next_state: np.ndarray,
+        action: int,
+        reward: float,
+        done: bool,
+        truncated: bool = False,
+    ) -> None:
         """Record one RAW transition. `done` means TERMINATED (true env
         terminal — bootstrap is cut). Time-limit ends go in `truncated`: the
         value target still bootstraps, but the n-step window flushes.
 
-        The ring buffer stores each frame once (F9.7 uint8 economy, now
-        ~5.8x better) and matures n-step windows internally. Episode starts
+        The ring buffer stores each frame once (uint8; about 5.8x less
+        RAM than the old deque, see `replay_buffer.py`)
+        and matures n-step windows internally. Episode starts
         are inferred: the first cache after construction or after any episode
         end registers `state` as the reset observation.
         """

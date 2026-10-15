@@ -1,19 +1,19 @@
 """Cartridge registry — maps cartridge_title (or override id) to adapter class."""
 from __future__ import annotations
 
-from typing import Type
+from typing import Callable, Type
 
 from deepEmulator.core.cartridge import CartridgeAdapter
 
 _REGISTRY: dict[str, Type[CartridgeAdapter]] = {}
 
 
-def register(cartridge_title: str):
+def register(cartridge_title: str) -> Callable[[Type[CartridgeAdapter]], Type[CartridgeAdapter]]:
     """Class decorator registering an adapter under `cartridge_title`.
 
     Re-registering a title replaces the previous class.
     """
-    def deco(cls: Type[CartridgeAdapter]):
+    def deco(cls: Type[CartridgeAdapter]) -> Type[CartridgeAdapter]:
         _REGISTRY[cartridge_title] = cls
         return cls
     return deco
