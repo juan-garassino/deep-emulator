@@ -23,12 +23,10 @@ from __future__ import annotations
 import argparse
 import importlib
 import math
-import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
 
 from deepEmulator.agents.ddqn_torch import DDQNAgent, config_from_metadata
 from deepEmulator.cartridges import load_all as _load_cartridges
@@ -97,7 +95,6 @@ class _ArrowsOverlay:
 
     def draw(self) -> None:
         cs = self.cell_size
-        side = (2 * self.grid_radius + 1) * cs
         self.surface.fill((20, 20, 20))
         if self._center is None:
             self.pygame.display.flip()
@@ -224,6 +221,28 @@ def run_play(
     env_factory=None,  # for tests: inject a fake env factory
     encoder_override: Path | None = None,  # --encoder flag: wins over metadata
 ) -> int:
+    """Play episodes from a saved bundle with a fixed-epsilon greedy policy.
+
+    Args:
+        cartridge: registered cartridge title; must match the bundle's.
+        rom: path to the ROM.
+        init_state: optional save-state used at reset.
+        ckpt: bundle directory (or its parent, resolved through `latest.txt`).
+        visible: open a visible SDL2 window.
+        arrows: show the live trajectory-arrow overlay.
+        attention: show the live attention overlay (needs a bundle with an encoder).
+        episodes: number of episodes to play.
+        max_episode_steps: per-episode step cap.
+        epsilon: exploration probability used during play.
+        env_factory: test hook returning a ready env instead of building one.
+        encoder_override: encoder bundle path that wins over the bundle's metadata.
+
+    Returns:
+        0 on success.
+
+    Raises:
+        ValueError: if the bundle's cartridge differs from `cartridge`.
+    """
     _load_cartridges()
 
     agent_state, metadata = load_bundle(ckpt)
@@ -352,6 +371,7 @@ def run_play(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: parse `argv` (default `sys.argv[1:]`) and return the process exit code."""
     args = _parse_args(argv)
     return run_play(
         cartridge=args.cartridge,

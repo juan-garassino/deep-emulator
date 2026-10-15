@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -20,6 +21,9 @@ import torch.nn.functional as F
 
 from deepEmulator.encoders.augmentations import MultiCropAugment, MultiCropConfig
 from deepEmulator.encoders.vit import ViTConfig, ViTTiny
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 # --- projection head --------------------------------------------------------
@@ -54,6 +58,7 @@ class DINOHead(nn.Module):
         self.last_linear.parametrizations.weight.original0.requires_grad = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Project `x` of shape `(B, in_dim)` to logits of shape `(B, out_dim)`."""
         x = self.mlp(x)
         x = F.normalize(x, dim=-1, p=2)
         return self.last_linear(x)
@@ -123,6 +128,7 @@ def update_teacher_ema(student: nn.Module, teacher: nn.Module, momentum: float) 
 # --- trainer wrapper -------------------------------------------------------
 @dataclass
 class DINOConfig:
+    """DINO hyperparameters: head sizes, temperatures, centering/EMA momentum, optimizer settings and the reference LR / weight-decay / teacher-momentum schedules."""
     out_dim: int = 4096
     hidden_dim: int = 512
     bottleneck_dim: int = 128
@@ -252,7 +258,15 @@ class DINOTrainer:
         start, end = self.dino_cfg.teacher_ema_momentum, self.dino_cfg.teacher_momentum_end
         return end - 0.5 * (end - start) * (1 + math.cos(math.pi * t))
 
-    def step(self, batch: torch.Tensor | "np.ndarray") -> float:  # type: ignore[name-defined]
+    def step(self, batch: torch.Tensor | np.ndarray) -> float:
+        """Run one optimisation step on a batch of frames and update the EMA teacher.
+
+        Args:
+            batch: frames `(B, 1, 96, 96)`, uint8 or float, as a tensor or ndarray.
+
+        Returns:
+            The DINO loss for this step as a float.
+        """
         import numpy as np
 
         if isinstance(batch, np.ndarray):
@@ -305,6 +319,7 @@ class DINOTrainer:
 
     # --- persistence -------------------------------------------------------
     def state_dict(self) -> dict:
+        """Return the full trainer state (student, teacher, heads, optimizer, DINO center, step count) for `torch.save`."""
         return {
             "student": self.student.state_dict(),
             "student_head": self.student_head.state_dict(),
@@ -316,6 +331,7 @@ class DINOTrainer:
         }
 
     def load_state_dict(self, sd: dict) -> None:
+        """Restore a dict from `state_dict`; `optimizer`, `center` and `step_count` are optional."""
         self.student.load_state_dict(sd["student"])
         self.student_head.load_state_dict(sd["student_head"])
         self.teacher.load_state_dict(sd["teacher"])

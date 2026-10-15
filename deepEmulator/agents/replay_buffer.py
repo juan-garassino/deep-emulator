@@ -30,6 +30,16 @@ import torch
 
 
 class ReplayBuffer:
+    """Preallocated ring buffer of transitions with frame-dedup storage and n-step returns.
+
+    Args:
+        capacity: total slots across all envs (each env gets `capacity // n_envs`, at least 16).
+        obs_shape: `(frame_stack, H, W)` uint8 pixels or `(D,)` float32 latents.
+        n_envs: number of independent sub-rings.
+        n_step: return horizon; 1 is classic one-step TD.
+        gamma: discount used to aggregate n-step rewards.
+        seed: seed for the sampling RNG.
+    """
     def __init__(
         self,
         capacity: int,
@@ -201,6 +211,14 @@ class ReplayBuffer:
         return out
 
     def sample(self, batch_size: int) -> tuple[np.ndarray, ...]:
+        """Sample a batch of matured transitions as numpy arrays.
+
+        Returns:
+            `(state, next_state, action, reward, done, discount)`. States have shape
+            `(B, *obs_shape)` (uint8 for pixels, float32 for latents); `action` is
+            int64 `(B,)`; `reward`, `done` (terminated only) and `discount`
+            (gamma^k) are float32 `(B,)`.
+        """
         env_ids, pos = self._sample_positions(batch_size)
         slots = env_ids * self.cap + pos % self.cap
         s = self._obs_at(env_ids, pos)

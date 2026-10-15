@@ -5,7 +5,7 @@ RAM map. Reward is always 0, episodes never terminate (env's max_steps bounds
 them), and no init.state is required.
 
 Use cases:
-- Verify PyBoy 2.4 API works against a cartridge you have lying around
+- Verify the PyBoy API works against a cartridge you have lying around
 - Collect frames for SSL pretraining from any ROM
 - Render `deepemu-play --visible` for any ROM without writing an adapter
 """
@@ -25,6 +25,11 @@ _DEFAULT_ACTIONS = ["down", "left", "right", "up", "a", "b"]
 
 @dataclass
 class GenericGameBoyAdapter(CartridgeAdapter):
+    """Zero-reward adapter usable with any Game Boy / Game Boy Color ROM.
+
+    Args:
+        include_start: append the `"start"` button to the default 6-button action set.
+    """
     cartridge_title: str = "GENERIC GB"
     platform: str = "gameboy"
     init_state: Any = None
@@ -37,16 +42,20 @@ class GenericGameBoyAdapter(CartridgeAdapter):
             self.action_set = [*self.action_set, "start"]
 
     def reset_episode(self, emulator: Any) -> None:
+        """No per-episode state to reset."""
         pass
 
     def read_game_state(self, emulator: Any) -> dict:
         # No RAM reading — zero-cost stub
+        """Return the constant `{"x": 0, "y": 0, "map_id": 0}`; no RAM is read."""
         return {"x": 0, "y": 0, "map_id": 0}
 
     def compute_reward(self, prev_state: dict, curr_state: dict, emulator: Any) -> float:
+        """Always 0.0."""
         return 0.0
 
     def is_done(self, state: dict) -> bool:
+        """Never terminal; the env's `max_steps` truncation bounds episodes."""
         return False
 
 

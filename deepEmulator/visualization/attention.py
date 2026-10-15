@@ -17,9 +17,13 @@ from __future__ import annotations
 import argparse
 import importlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from deepEmulator.encoders.vit import ViTTiny
 
 
 # --- core rollout ----------------------------------------------------------
@@ -114,7 +118,7 @@ def compose_overlay(
 
 # --- end-to-end: encode a frame and produce the overlay --------------------
 def attention_for_frame(
-    encoder: "ViTTiny",  # type: ignore[name-defined]
+    encoder: "ViTTiny",
     frame_rgb: np.ndarray,
     *,
     alpha: float = 0.5,
@@ -174,6 +178,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: parse `argv` (default `sys.argv[1:]`) and return the process exit code."""
     args = _parse_args(argv)
 
     from deepEmulator.cartridges import load_all as _load_cartridges

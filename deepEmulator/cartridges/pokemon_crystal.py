@@ -108,6 +108,11 @@ def dump_state(pyboy: Any) -> dict:
 # --- adapter -----------------------------------------------------------------
 @dataclass
 class PokemonCrystalAdapter(CartridgeAdapter):
+    """Pokemon Crystal adapter: Gen 2 RAM reads plus a boot -> tutorial -> main `PhasedReward`.
+
+    Reward weights and `faint_terminal` are dataclass fields. Per-episode state
+    (visited coordinates, reward baselines) is wiped in `reset_episode`.
+    """
     cartridge_title: str = "POKEMON CRYSTAL"
     platform: str = "gameboy"
     init_state: Path | None = None
@@ -312,6 +317,7 @@ class PokemonCrystalAdapter(CartridgeAdapter):
 
     # --- CartridgeAdapter interface -----------------------------------------
     def reset_episode(self, pyboy: Any) -> None:
+        """Clear per-episode bookkeeping and re-baseline reward totals, party size and HP from the current RAM."""
         self.seen_coords = {}
         self.max_event_rew = 0.0
         self.total_healing_rew = 0.0
@@ -331,6 +337,7 @@ class PokemonCrystalAdapter(CartridgeAdapter):
         self._phased.last_phase = None
 
     def read_game_state(self, pyboy: Any) -> dict:
+        """Return a dict with `x`, `y`, `map_group`, `map_number`, `map_id` (`group * 256 + number`), `hp_fraction`, `badges`, `party_size` and `in_battle`."""
         x, y, g, m = self._coords(pyboy)
         return {
             "x": x,
@@ -347,6 +354,7 @@ class PokemonCrystalAdapter(CartridgeAdapter):
 
     def compute_reward(self, prev_state: dict, curr_state: dict, pyboy: Any) -> float:
         # Delegate to phased reward (boot → tutorial → main).
+        """Delegate to the phased reward (boot, tutorial, main); the phase set is built lazily on first call."""
         if self._phased is None:
             self._phased = self._build_phased()
         return self._phased.compute(prev_state, curr_state, pyboy)
@@ -358,6 +366,7 @@ class PokemonCrystalAdapter(CartridgeAdapter):
     def is_done(self, state: dict) -> bool:
         # party wipe = true terminal (the only one on the GB path). Bounded
         # episodes otherwise come from the env's max_steps truncation.
+        """True on a party wipe (party size >= 1 and HP fraction 0) when `faint_terminal` is set; otherwise episodes end by env truncation."""
         return bool(
             self.faint_terminal
             and state.get("party_size", 0) >= 1
@@ -365,6 +374,7 @@ class PokemonCrystalAdapter(CartridgeAdapter):
         )
 
     def get_trajectory_coords(self, state: dict) -> tuple[int, int, int]:
+        """Return `(x, y, map_id)` from `state`."""
         return state["x"], state["y"], state["map_id"]
 
 

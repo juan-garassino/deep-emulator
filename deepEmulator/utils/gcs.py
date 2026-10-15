@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import shutil
 import time
 from pathlib import Path
@@ -149,6 +148,7 @@ def download_dir(uri: str, dest: Path | str) -> Path:
 
 
 def exists(uri: str) -> bool:
+    """True if the object at a `gs://` or `file://` URI exists."""
     scheme, bucket, key = parse_uri(uri)
     if scheme == "file":
         return _file_path(bucket, key).exists()

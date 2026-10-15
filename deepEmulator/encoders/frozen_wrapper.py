@@ -15,9 +15,8 @@ from typing import Any
 import numpy as np
 import torch
 
-from deepEmulator.core.cartridge import CartridgeAdapter
 from deepEmulator.core.env import EmulatorEnv
-from deepEmulator.core.spaces import Box, Discrete
+from deepEmulator.core.spaces import Box
 from deepEmulator.data.frame_corpus import OBS_PREPROCESSING, normalize_to_96x96
 from deepEmulator.encoders.vit import ViTConfig, ViTTiny
 
@@ -81,17 +80,21 @@ class FrozenEncoderEnv(EmulatorEnv):
         return self._latents.flatten()
 
     def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:
+        """Reset the inner env and return `(latent_obs, info)`; `latent_obs` is float32 of shape `(frame_stack * latent_dim,)`."""
         obs, info = self.inner.reset(seed=seed)
         return self._encode_full(obs), info
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """Step the inner env and return `(latent_obs, reward, terminated, truncated, info)`; `latent_obs` is float32 `(frame_stack * latent_dim,)`."""
         obs, r, term, trunc, info = self.inner.step(action)
         return self._encode_step(obs), float(r), bool(term), bool(trunc), info
 
     def render(self) -> Any:
+        """Delegate to the inner env."""
         return self.inner.render()
 
     def close(self) -> None:
+        """Close the inner env."""
         self.inner.close()
 
 

@@ -66,6 +66,10 @@ def local_to_global(r: int, c: int, map_n: int) -> tuple[int, int]:
 
 @dataclass
 class PokemonRedAdapter(CartridgeAdapter):
+    """Pokemon Red adapter: PWhiddy-style RAM reward (events, heal, badges, exploration, levels, stuck penalty).
+
+    Per-episode state lives on the adapter and is wiped in `reset_episode`.
+    """
     cartridge_title: str = "POKEMON RED"
     platform: str = "gameboy"
     init_state: Path | None = None
@@ -87,6 +91,7 @@ class PokemonRedAdapter(CartridgeAdapter):
     _total_reward: float = 0.0
 
     def reset_episode(self, pyboy: Any) -> None:
+        """Clear per-episode bookkeeping and re-baseline reward totals, party size, HP and event-flag count from the current RAM."""
         self.seen_coords = {}
         self.max_event_rew = 0.0
         self.total_healing_rew = 0.0
@@ -157,6 +162,7 @@ class PokemonRedAdapter(CartridgeAdapter):
 
     # --- CartridgeAdapter interface ----------------------------------------
     def read_game_state(self, emulator: Any) -> dict:
+        """Return a dict with `x`, `y`, `map_id`, `hp_fraction`, `badges`, `party_size` and `levels`."""
         x, y, m = self._coords(emulator)
         return {
             "x": x,
@@ -170,6 +176,7 @@ class PokemonRedAdapter(CartridgeAdapter):
 
     def compute_reward(self, prev_state: dict, curr_state: dict, emulator: Any) -> float:
         # update per-step bookkeeping driven by RAM
+        """Update exploration/heal bookkeeping, then return the change in total shaped reward plus the per-step stuck penalty."""
         self._update_seen(emulator)
         self._update_heal(emulator)
         components = self._reward_components(emulator)
@@ -181,9 +188,11 @@ class PokemonRedAdapter(CartridgeAdapter):
 
     def is_done(self, state: dict) -> bool:
         # episode termination is step-count-bounded at the env level
+        """Always False; episodes end by env `max_steps` truncation."""
         return False
 
     def get_trajectory_coords(self, state: dict) -> tuple[int, int, int]:
+        """Return `(x, y, map_id)` from `state`."""
         return state["x"], state["y"], state["map_id"]
 
 

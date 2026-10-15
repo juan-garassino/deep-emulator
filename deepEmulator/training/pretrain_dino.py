@@ -18,7 +18,6 @@ import json
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from deepEmulator.data.frame_corpus import FrameStorage
@@ -71,6 +70,7 @@ def _write_bundle(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: parse `argv` (default `sys.argv[1:]`) and return the process exit code."""
     args = _parse_args(argv)
     args.runs_root.mkdir(parents=True, exist_ok=True)
     dino_root = args.runs_root / "dino"

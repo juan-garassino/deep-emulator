@@ -1,7 +1,7 @@
 """CartridgeAdapter ABC — per-ROM RAM map + reward + action set + done.
 
 Concrete adapters live in `deepEmulator.cartridges.*`.
-Modeled on lixado's AISettingsInterface but Gymnasium-native.
+Modeled on lixado/PyBoy-RL's AISettings interface, without a gymnasium dependency.
 """
 from __future__ import annotations
 
@@ -60,6 +60,19 @@ def combo_action_set(
 
 @dataclass
 class CartridgeAdapter(ABC):
+    """Per-ROM plugin: RAM reads, reward, done condition and action set.
+
+    Subclass, implement the three abstract methods, and register with
+    `deepEmulator.core.registry.register`.
+
+    Attributes:
+        cartridge_title: registry key (ROM header title for Game Boy).
+        platform: `"gameboy"`, `"atari"` or `"sega"`.
+        init_state: optional save-state used as the episode start.
+        action_set: platform-specific action vocabulary indexed by action id.
+        observation_shape: shape of the observations the env produces.
+    """
+
     cartridge_title: str
     platform: Literal["gameboy", "atari", "sega"]
     init_state: Path | None = None
@@ -67,13 +80,19 @@ class CartridgeAdapter(ABC):
     observation_shape: tuple[int, ...] = ()
 
     @abstractmethod
-    def compute_reward(self, prev_state: dict, curr_state: dict, emulator: Any) -> float: ...
+    def compute_reward(self, prev_state: dict, curr_state: dict, emulator: Any) -> float:
+        """Return the scalar reward for the transition `prev_state -> curr_state`.
+
+        Both dicts come from `read_game_state`; `emulator` is the backend handle.
+        """
 
     @abstractmethod
-    def read_game_state(self, emulator: Any) -> dict: ...
+    def read_game_state(self, emulator: Any) -> dict:
+        """Read the cartridge-specific game state (RAM values etc.) into a plain dict."""
 
     @abstractmethod
-    def is_done(self, state: dict) -> bool: ...
+    def is_done(self, state: dict) -> bool:
+        """True if `state` (from `read_game_state`) is a terminal state of the game."""
 
     def reset_episode(self, emulator: Any) -> None:
         """Called by the env on every reset(). Stateful adapters (exploration

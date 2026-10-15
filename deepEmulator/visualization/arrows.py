@@ -23,7 +23,7 @@ import gzip
 import importlib
 import math
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 import numpy as np
 
@@ -64,6 +64,7 @@ def load_trajectory_dir(traj_dir: Path | str) -> np.ndarray:
 
 
 def load_trajectory_csv(csv_path: Path | str) -> np.ndarray:
+    """Read a trajectory CSV (optionally `.csv.gz`) and return an int32 array of shape `(n_steps, 3)` with columns `(x, y, map_id)`."""
     csv_path = Path(csv_path)
     opener = gzip.open if csv_path.suffix == ".gz" else open
     coords: list[tuple[int, int, int]] = []
@@ -126,7 +127,7 @@ def _arrow_sprite(size: int, color: tuple[int, int, int]):
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     margin = max(1, size // 8)
-    cx, cy = size // 2, size // 2
+    cy = size // 2
     shaft_h = max(2, size // 4)
     # Shaft + arrowhead, pointing right (will be rotated by render_arrows)
     d.rectangle(
@@ -201,6 +202,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: parse `argv` (default `sys.argv[1:]`) and return the process exit code."""
     args = _parse_args(argv)
     local_to_global = _resolve_local_to_global(args.cartridge)
     if args.trajectories is not None:

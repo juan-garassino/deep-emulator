@@ -42,6 +42,11 @@ def make_env(
     max_steps: int = 4096,
     action_set: list | None = None,
 ):
+    """Build a `PyBoyEnv` for `cartridge`, wrapped in `FrozenEncoderEnv` when `encoder_path` is given.
+
+    `action_set`, if given (e.g. recorded in a bundle), overrides the adapter's
+    default so policy-head indices stay aligned. The encoder runs on the device from `get_device_str()`.
+    """
     from deepEmulator.core import registry
     from deepEmulator.platforms.gameboy import PyBoyEnv
 
@@ -328,6 +333,14 @@ def write_report(
     *,
     title: str = "deepEmulator eval report",
 ) -> Path:
+    """Write the head-to-head HTML report and return `out_path`.
+
+    Args:
+        summaries: per-bundle eval summary dicts (baseline first, then treatment).
+        bundle_dirs: bundle directories matching `summaries`, used for training curves and k-NN grids.
+        out_path: destination HTML file.
+        title: page title.
+    """
     labels = ["baseline", "treatment"]
     curve = _training_curve_png(list(zip(labels[: len(bundle_dirs)], bundle_dirs)))
     summary_cells = "".join(
@@ -416,6 +429,7 @@ def _read_metadata(bundle: Path) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: parse `argv` (default `sys.argv[1:]`) and return the process exit code."""
     args = _parse_args(argv)
 
     bundles = [args.baseline]

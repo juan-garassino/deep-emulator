@@ -63,6 +63,7 @@ def _random_resized_crop(x: torch.Tensor, out_size: int, scale: tuple[float, flo
 
 @dataclass
 class MultiCropConfig:
+    """Multi-crop settings: `n_global` large and `n_local` small views at `out_size` pixels, with crop-scale, blur, brightness and contrast ranges."""
     n_global: int = 2
     n_local: int = 6
     out_size: int = 96
@@ -117,4 +118,5 @@ class MultiCropAugment:
 
     @property
     def n_total(self) -> int:
+        """Total number of views produced per input (`n_global + n_local`)."""
         return self.cfg.n_global + self.cfg.n_local

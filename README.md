@@ -2,7 +2,7 @@
 
 Cartridge-adaptive deep-RL substrate for **Game Boy / Game Boy Color** (via [PyBoy](https://github.com/Baekalfen/PyBoy)), **Atari 2600** (via [ale-py](https://ale.farama.org/)), and **SEGA Genesis** (via [stable-retro](https://github.com/Farama-Foundation/stable-retro), planned).
 
-Wired cartridges: **Pokemon Red** (Gen 1, DMG), **Pokemon Crystal** (Gen 2, GBC), **Atari Pong**, plus a **`GENERIC GB`** zero-reward adapter for any GB/GBC ROM (smoke-testing). Mario / Kirby / Sonic adapters on the roadmap.
+Registered cartridges (`deepEmulator/cartridges/__init__.py::load_all`): **Pokemon Red** (Gen 1, DMG), **Pokemon Crystal** and **Pokemon Coral** (Gen 2, GBC), **Atari Pong**, a **`GENERIC GB`** zero-reward adapter for any GB/GBC ROM, and **`SYNTH BLOB`**, a ROM-free synthetic env used by tests and smoke runs. Mario / Kirby / Sonic adapters are not implemented.
 
 One harness, many games. Swap Pokemon Red ↔ Crystal ↔ Pong by changing a config — same DDQN training loop, same portable checkpoint bundle, same local-inference path.
 
@@ -12,12 +12,32 @@ The perception story is **either pixel-CNN or frozen-DINO latents** — the DDQN
 
 ## Status
 
-Phases I + II + III complete. Suite: ~75 passing, 2 ROM-gated skips. The two skips run green once you drop a Pokemon Red ROM into `roms/` and an init save-state into `states/`. **No real ROM has been touched yet** by this codebase — the PyBoy 2.4 / ALE API surface is verified only against reference repos. See `~/.claude/plans/how-you-know-now-golden-rabbit.md` for the full plan history.
+Pipeline code is in place for pixel DDQN, DINO pretraining, frozen-encoder DDQN, evaluation, attention/arrow visualizations and a RunPod + GCS container. **There are no published training results**: no run longer than 500 steps on a real ROM has been done, and the Colab and RunPod paths have not been exercised end to end (see "What's still unverified" in `CLAUDE.md`).
+
+Test suite (CPU, no ROMs, Python 3.11, measured during the 2026-10 portfolio sweep): **244 passed, 8 skipped** via `python -m pytest tests`. The skips are ROM-gated tests; they run when the ROMs and save-states they need are present in `roms/` and `states/`.
+
+## Quickstart (no ROM needed)
+
+The `SYNTH BLOB` cartridge is a bouncing-blob env, so the whole stack can be checked on a laptop CPU:
+
+```bash
+pip install -e ".[dev]"
+make smoke                     # import check, prints "deepEmulator 0.1.0 OK"
+
+# 200-step DDQN run on the synthetic env (writes a checkpoint bundle under --runs-root)
+deepemu-train --cartridge "SYNTH BLOB" --rom none --steps 200 \
+              --max-episode-steps 50 --headless --runs-root /tmp/deepemu_runs
+
+# Full pipeline on the synthetic env: corpus -> DINO -> DDQN on latents -> eval report -> attention GIF
+PYTHONPATH=. python scripts/nano_e2e.py --out /tmp/deepemu_nano_e2e
+```
+
+Both commands were run during the sweep; the nano pipeline finished in about 12 s on a CPU-only Linux sandbox. Its numbers (30 DINO iterations, 50 DDQN steps, eval mean reward 0.0) only show that the plumbing runs, not that anything learns.
 
 ## Install
 
 ```bash
-pip install -e ".[atari,play,dev]"   # local laptop install (Phase II + III stack)
+pip install -e ".[atari,play,dev]"   # local laptop install (Atari, pygame overlays, dev tools)
 # or, à la carte:
 pip install -e .                     # core (Game Boy via PyBoy + headless matplotlib/seaborn)
 pip install -e ".[atari]"            # + ale-py for Atari
@@ -36,17 +56,17 @@ ROMs are user-supplied (legal dump of a cart you own). Drop them in `roms/`. PyB
 
 **PyTorch only.** Core runtime deps: `pyboy + torch + numpy`. No gymnasium, no stable-baselines3. The minimal `Env` protocol, `Box`/`Discrete` spaces, DDQN agent, ViT-tiny, DINO loss, attention rollout, and arrow flow viz are all vendored as small focused modules ported from upstream references (lixado/PyBoy-RL, PWhiddy/PokemonRedExperiments, facebookresearch/dino, facebookresearch/mae) — not pulled in as frameworks.
 
-## The seven CLIs
+## The CLIs
 
 ```bash
-# Train DDQN on pixels (Phase I baseline)
+# Train DDQN on pixels (baseline)
 # Epsilon linearly anneals 1.0 -> 0.05 over the first 10% of --steps
 # (--eps-anneal-frac); gamma defaults to 0.99 (--gamma); pixel obs are /255-
 # normalized automatically.
 deepemu-train --cartridge "POKEMON RED" --rom roms/PokemonRed.gb \
               --init-state states/init.state --steps 100000 --headless
 
-# Train DDQN on frozen DINO latents (Phase II/III)
+# Train DDQN on frozen DINO latents
 deepemu-train --cartridge "POKEMON RED" --rom roms/PokemonRed.gb \
               --init-state states/init.state --steps 100000 --headless \
               --encoder $(cat encoders/dino/latest.txt)
@@ -69,6 +89,9 @@ deepemu-collect-frames --cartridges "POKEMON RED" "ATARI PONG" \
 
 # Pretrain a ViT-tiny with DINO self-supervised on the corpus
 deepemu-pretrain-dino --corpus data/frames/multi --steps 50000 --batch-size 64
+
+# (deepemu-pretrain-vjepa is registered but is a placeholder: it prints a
+#  "not implemented" message and exits with code 2)
 
 # Render the encoder's attention rollout as an animated GIF
 deepemu-attention --encoder $(cat encoders/dino/latest.txt) \
@@ -124,7 +147,7 @@ open /tmp/deepemu_nano_e2e/eval_report.html
 open /tmp/deepemu_nano_e2e/attention.gif
 ```
 
-Runs in ~175 s on CPU. Produces every artifact the real pipeline produces (DINO encoder bundle, DDQN bundle with encoder linkage, eval report, attention GIF).
+Measured at about 12 s on a CPU-only Linux sandbox (an earlier note in this README said ~175 s on a different machine). Produces the artifacts of each pipeline stage (DINO encoder bundle, DDQN bundle with encoder linkage, eval report, attention GIF), using synthetic frames.
 
 ## Pokemon Crystal
 
@@ -215,7 +238,7 @@ CLAUDE_CODE_ENABLED=1
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-If any is missing, the container runs the deterministic path instead. Guardrails: `MAX_ITERATIONS` (default 10), `MAX_WALLCLOCK_HOURS` (default 12), read-only baseline mount, SHA256-signed eval rows via `scripts/eval_signed.py`, branch isolation (never touches `master`). This mode mirrors `/Users/juan-garassino/Code/005-products/020-autoresearch` — see that repo for the upstream pattern. **Honest risk:** Goodhart-on-eval, GPU cost variance, no real sandbox. Treat self-improve branches as untrusted until reviewed.
+If any is missing, the container runs the deterministic path instead. Guardrails: `MAX_ITERATIONS` (default 10), `MAX_WALLCLOCK_HOURS` (default 12), read-only baseline mount, SHA256-signed eval rows via `scripts/eval_signed.py`, branch isolation (never pushes to the default branch). This mode mirrors `/Users/juan-garassino/Code/005-products/020-autoresearch` — see that repo for the upstream pattern. **Honest risk:** Goodhart-on-eval, GPU cost variance, no real sandbox. Treat self-improve branches as untrusted until reviewed.
 
 **How to turn it off completely:** leave `CLAUDE_CODE_ENABLED` unset (the default). `claude` is never invoked.
 
@@ -235,6 +258,14 @@ Notifications are opt-in via repo secrets. Steps:
    - `TELEGRAM_TO` — the chat ID
 4. **Done.** Both workflows auto-skip the notify step when `TELEGRAM_TOKEN` is unset, so the secrets are truly optional.
 
+## Development
+
+```bash
+make test          # coverage run -m pytest tests/ ; coverage report
+make check_code    # flake8 deepEmulator
+make black         # format deepEmulator/ and tests/ (line length 100, see pyproject.toml)
+```
+
 ## Adding a cartridge
 
 1. Implement `CartridgeAdapter` (see `deepEmulator/core/cartridge.py` + `deepEmulator/cartridges/pokemon_red.py` as a reference).
@@ -249,7 +280,7 @@ Notifications are opt-in via repo secrets. Steps:
 
 ## References
 
-- [PyBoy](https://github.com/Baekalfen/PyBoy) — Game Boy emulator (we use `pyboy 2.4`)
+- [PyBoy](https://github.com/Baekalfen/PyBoy) — Game Boy emulator (pinned to `pyboy==2.7.0` in `pyproject.toml`)
 - [ale-py](https://ale.farama.org/) — Atari Learning Environment, ROMs bundled in 0.11+
 - [PokemonRedExperiments](https://github.com/PWhiddy/PokemonRedExperiments) — reference PyBoy-RL pipeline + arrow viz (`visualization/BetterMapVis_script_version_FLOW.py`)
 - [PyBoy-RL](https://github.com/lixado/PyBoy-RL) — reference cartridge-adapter pattern + Colab guide
