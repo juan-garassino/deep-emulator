@@ -23,12 +23,10 @@ from __future__ import annotations
 import argparse
 import importlib
 import math
-import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
 
 from deepEmulator.agents.ddqn_torch import DDQNAgent, config_from_metadata
 from deepEmulator.cartridges import load_all as _load_cartridges
@@ -97,7 +95,6 @@ class _ArrowsOverlay:
 
     def draw(self) -> None:
         cs = self.cell_size
-        side = (2 * self.grid_radius + 1) * cs
         self.surface.fill((20, 20, 20))
         if self._center is None:
             self.pygame.display.flip()

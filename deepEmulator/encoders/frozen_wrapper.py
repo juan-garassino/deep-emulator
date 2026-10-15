@@ -15,9 +15,8 @@ from typing import Any
 import numpy as np
 import torch
 
-from deepEmulator.core.cartridge import CartridgeAdapter
 from deepEmulator.core.env import EmulatorEnv
-from deepEmulator.core.spaces import Box, Discrete
+from deepEmulator.core.spaces import Box
 from deepEmulator.data.frame_corpus import OBS_PREPROCESSING, normalize_to_96x96
 from deepEmulator.encoders.vit import ViTConfig, ViTTiny
 

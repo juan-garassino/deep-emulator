@@ -18,7 +18,6 @@ import json
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from deepEmulator.data.frame_corpus import FrameStorage

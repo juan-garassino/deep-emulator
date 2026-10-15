@@ -16,7 +16,6 @@ import importlib.metadata
 import json
 import platform
 import sys
-from dataclasses import asdict
 from pathlib import Path
 
 import torch

@@ -17,9 +17,13 @@ from __future__ import annotations
 import argparse
 import importlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from deepEmulator.encoders.vit import ViTTiny
 
 
 # --- core rollout ----------------------------------------------------------
@@ -114,7 +118,7 @@ def compose_overlay(
 
 # --- end-to-end: encode a frame and produce the overlay --------------------
 def attention_for_frame(
-    encoder: "ViTTiny",  # type: ignore[name-defined]
+    encoder: "ViTTiny",
     frame_rgb: np.ndarray,
     *,
     alpha: float = 0.5,

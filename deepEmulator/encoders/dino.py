@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -20,6 +21,9 @@ import torch.nn.functional as F
 
 from deepEmulator.encoders.augmentations import MultiCropAugment, MultiCropConfig
 from deepEmulator.encoders.vit import ViTConfig, ViTTiny
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 # --- projection head --------------------------------------------------------
@@ -252,7 +256,7 @@ class DINOTrainer:
         start, end = self.dino_cfg.teacher_ema_momentum, self.dino_cfg.teacher_momentum_end
         return end - 0.5 * (end - start) * (1 + math.cos(math.pi * t))
 
-    def step(self, batch: torch.Tensor | "np.ndarray") -> float:  # type: ignore[name-defined]
+    def step(self, batch: torch.Tensor | np.ndarray) -> float:
         import numpy as np
 
         if isinstance(batch, np.ndarray):

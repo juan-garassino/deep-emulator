@@ -23,7 +23,7 @@ import gzip
 import importlib
 import math
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 import numpy as np
 
@@ -126,7 +126,7 @@ def _arrow_sprite(size: int, color: tuple[int, int, int]):
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     margin = max(1, size // 8)
-    cx, cy = size // 2, size // 2
+    cy = size // 2
     shaft_h = max(2, size // 4)
     # Shaft + arrowhead, pointing right (will be rotated by render_arrows)
     d.rectangle(
